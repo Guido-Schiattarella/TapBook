@@ -1,0 +1,23 @@
+{% extends "_auth.html" %}
+{% block title %}Accedi · TapBook{% endblock %}
+{% block auth %}
+  <h1>Bentornato!</h1>
+  <p class="muted">Accedi per aprire i tuoi documenti</p>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" autocomplete="on" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Nome utente
+      <input name="username" autocapitalize="none" autocorrect="off" autocomplete="username" required autofocus>
+    </label>
+    <label>Password
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="primary wide">Accedi</button>
+  </form>
+  {% if allow_registration %}
+  <p class="switch">Non hai un account? <a href="{{ url_for('register') }}">Registrati</a></p>
+  {% endif %}
+  {% if https %}
+  <p class="switch small"><a href="{{ url_for('certificate_help') }}"><svg class="i"><use href="#i-lock"></use></svg> Prima volta su questo iPad? Installa il certificato</a></p>
+  {% endif %}
+{% endblock %}

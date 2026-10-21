@@ -1,0 +1,30 @@
+# --- Personal data and settings: NEVER commit -----------------------------------
+# instance/: user database (tapbook.db, with accounts and their password hashes),
+# session signing key (secret_key), private key of the HTTPS CA (tls/), page
+# cache, old MariaDB database (mysql/).
+instance/
+# Local settings (only config.example.ini is distributed).
+config.ini
+
+# --- Generated files: recreated automatically -----------------------------------
+.venv/
+__pycache__/
+*.pyc
+# Packages built by installer/crea_pacchetti.py: attach them to GitHub Releases.
+dist/
+
+# --- Local machine files ---------------------------------------------------------
+# PyCharm settings.
+.idea/
+# Original logo folder (the app uses the copies in app/view/static/img) and
+# temporary files left over by incomplete saves.
+logo/
+.xdp-*
+# Error report written when the control panel cannot open (app/desktop) and
+# the installers' log.
+desktop-error.log
+install.log
+
+# --- Development documentation (.docx): stays local ------------------------------
+# It contains the computer's username and the home network address.
+DOCUMENTAZIONE*.docx

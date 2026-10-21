@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{# Login pages: the light-blue panel on the left, like the app's sidebar,
+   the form on the right. #}
+{% block bodyclass %}auth-page{% endblock %}
+{% block body %}
+<div class="auth">
+  <aside class="auth-side">
+    <div class="brand">
+      <img class="brand-logo" src="{{ url_for('static', filename='img/logo.png') }}" alt="">
+      <span class="brand-name">TapBook</span>
+    </div>
+    <div class="auth-hero">
+      <h2>Le tue note,<br>sul tuo computer.</h2>
+      <p>Scrivi con la Apple Pencil dall'iPad: ogni tratto finisce in un PDF sul PC, nella rete di casa.</p>
+    </div>
+    <div class="auth-notes" aria-hidden="true">
+      <div class="mini-note" style="--note-bg:#e4efff;--note-dot:#3a7bfd"><span></span><b></b><i></i><i></i></div>
+      <div class="mini-note" style="--note-bg:#e1f5e8;--note-dot:#2fa36b"><span></span><b></b><i></i></div>
+      <div class="mini-note" style="--note-bg:#fff5d4;--note-dot:#d9a514"><span></span><b></b><i></i><i></i></div>
+    </div>
+  </aside>
+  <main class="auth-main">
+    <div class="auth-card {% block cardclass %}{% endblock %}">
+      {% block auth %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% endblock %}

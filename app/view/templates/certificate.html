@@ -1,0 +1,19 @@
+{% extends "_auth.html" %}
+{% block title %}Certificato · TapBook{% endblock %}
+{% block cardclass %}wide{% endblock %}
+{% block auth %}
+  <h1>Connessione sicura</h1>
+  <p class="muted">L'app usa una connessione cifrata (HTTPS) con un certificato creato dal tuo PC.
+    Installandolo una volta sull'iPad, Safari smette di mostrare l'avviso di sicurezza.</p>
+  <ol class="steps">
+    <li><a class="button primary" href="{{ url_for('certificate') }}"><svg class="i"><use href="#i-lock"></use></svg> Scarica il certificato</a>
+      <br><span class="muted">Safari chiede se consentire il download del profilo: tocca <b>Consenti</b>.</span></li>
+    <li>Apri <b>Impostazioni</b> → <b>Profilo scaricato</b> (in alto) → <b>Installa</b> e conferma.</li>
+    <li>Apri <b>Impostazioni</b> → <b>Generali</b> → <b>Info</b> → <b>Impostazioni attendibilità certificati</b>
+      e attiva <b>Note PDF - certificato locale</b>.</li>
+    <li>Torna qui e ricarica la pagina: l'avviso non comparirà più.</li>
+  </ol>
+  <p class="muted small">Il certificato vale solo per questa app sulla tua rete. Si può togliere da
+    Impostazioni → Generali → VPN e gestione dispositivi.</p>
+  <p class="switch"><a href="{{ url_for('login') }}">Torna all'accesso</a></p>
+{% endblock %}

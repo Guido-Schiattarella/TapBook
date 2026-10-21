@@ -1,0 +1,35 @@
+{% extends "_auth.html" %}
+{% block title %}Registrati · TapBook{% endblock %}
+{% block auth %}
+  {% if first_user %}
+  <h1>Benvenuto</h1>
+  <p class="muted">Primo avvio: non ci sono ancora utenti. Crea il tuo account per iniziare.</p>
+  {% else %}
+  <h1>Crea un account</h1>
+  <p class="muted">Avrai una cartella personale per i tuoi documenti</p>
+  {% endif %}
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" autocomplete="on" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Nome utente
+      <input name="username" value="{{ username }}" autocapitalize="none" autocorrect="off"
+             autocomplete="username" required minlength="3" maxlength="32"
+             pattern="[a-zA-Z0-9][a-zA-Z0-9_\-]{2,31}" autofocus>
+      <span class="hint">3-32 caratteri: lettere, numeri, _ e -</span>
+    </label>
+    <label>Password
+      <input name="password" type="password" autocomplete="new-password" required minlength="8">
+      <span class="hint">Almeno 8 caratteri</span>
+    </label>
+    <label>Ripeti password
+      <input name="confirm" type="password" autocomplete="new-password" required minlength="8">
+    </label>
+    <button type="submit" class="primary wide">Registrati</button>
+  </form>
+  {% if not first_user %}
+  <p class="switch">Hai già un account? <a href="{{ url_for('login') }}">Accedi</a></p>
+  {% endif %}
+  {% if https %}
+  <p class="switch small"><a href="{{ url_for('certificate_help') }}"><svg class="i"><use href="#i-lock"></use></svg> Prima volta su questo iPad? Installa il certificato</a></p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}TapBook{% endblock %}
+{% block body %}
+{# A single page with several views (list, search, trash, account, editor). The
+   controller on the computer decides which one to show in its answer to every
+   request. The list views sit inside the "frame" with sidebar and top bar; the
+   editor takes the whole screen. #}
+
+<div id="shell" class="shell" hidden>
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-logo" src="{{ url_for('static', filename='img/logo.png') }}" alt="">
+      <span class="brand-name">TapBook</span>
+    </div>
+    <nav class="nav" aria-label="Sezioni">
+      <button class="nav-item" data-nav="library"><svg class="i"><use href="#i-docs"></use></svg><span>Documenti</span></button>
+      <button class="nav-item" data-nav="search"><svg class="i"><use href="#i-search"></use></svg><span>Cerca</span></button>
+      <button class="nav-item" data-nav="trash"><svg class="i"><use href="#i-trash"></use></svg><span>Cestino</span></button>
+      <button class="nav-item" data-nav="account"><svg class="i"><use href="#i-user"></use></svg><span>Account</span></button>
+    </nav>
+    <div class="nav-sep"></div>
+    <p class="nav-section">Cartelle</p>
+    <ul id="side-folders" class="side-folders"></ul>
+    <button id="side-add-folder" class="side-add"><svg class="i"><use href="#i-plus"></use></svg><span>Nuova cartella</span></button>
+    <div class="sidebar-foot">
+      <form method="post" action="{{ url_for('logout') }}" class="inline">
+        <button type="submit" class="side-add"><svg class="i"><use href="#i-logout"></use></svg><span>Esci</span></button>
+      </form>
+      <small>Note PDF · salvate sul tuo PC</small>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="appbar">
+      <form id="search-form" class="search-box" role="search">
+        <svg class="i"><use href="#i-search"></use></svg>
+        <input id="search-input" type="search" placeholder="Cerca nei documenti" autocomplete="off" enterkeyhint="search" aria-label="Cerca nei documenti">
+      </form>
+      <button id="btn-account" class="hello" title="Account">
+        <span class="avatar small" id="topbar-avatar"></span>
+        <span id="hello-text">Ciao, {{ username }}!</span>
+      </button>
+    </header>
+
+    <section id="library-view" class="content" hidden>
+      <nav id="crumbs" class="crumbs" aria-label="Percorso"></nav>
+      <div class="content-bar">
+        <div class="pills" role="tablist" aria-label="Mostra">
+          <button class="pill active" data-filter="all">Tutti</button>
+          <button class="pill" data-filter="pdf">Documenti</button>
+          <button class="pill" data-filter="dir">Cartelle</button>
+        </div>
+        <div class="bar-actions">
+          <button id="btn-newdoc" class="link-action"><svg class="i"><use href="#i-plus-circle"></use></svg>Nuovo documento</button>
+          <button id="btn-mkdir" class="link-action"><svg class="i"><use href="#i-folder"></use></svg>Nuova cartella</button>
+          <label class="link-action"><svg class="i"><use href="#i-upload"></use></svg>Importa PDF<input id="file-upload" type="file" accept="application/pdf,.pdf" hidden></label>
+        </div>
+      </div>
+      <p id="message" class="message" hidden></p>
+      <ul id="entries" class="cards"></ul>
+      <div id="empty" class="empty" hidden>
+        <svg class="i"><use href="#i-logo"></use></svg>
+        <p>Qui non c'è ancora niente.</p>
+        <p class="muted small">Crea un documento o una cartella, oppure importa un PDF.</p>
+      </div>
+    </section>
+
+    <section id="search-view" class="content" hidden>
+      <h1 class="content-title">Ricerca</h1>
+      <p id="search-summary" class="muted"></p>
+      <ul id="search-results" class="list"></ul>
+      <p class="muted small">La ricerca guarda nomi, cartelle e testo dei documenti (testo dei PDF e caselle di testo). La scrittura a mano non si può cercare.</p>
+    </section>
+
+    <section id="trash-view" class="content" hidden>
+      <div class="content-bar">
+        <h1 class="content-title">Cestino</h1>
+        <div class="bar-actions">
+          <button id="btn-empty-trash" class="link-action danger"><svg class="i"><use href="#i-trash"></use></svg>Svuota cestino</button>
+        </div>
+      </div>
+      <p id="trash-message" class="message" hidden></p>
+      <ul id="trash-entries" class="list"></ul>
+      <div id="trash-empty" class="empty" hidden>
+        <svg class="i"><use href="#i-trash"></use></svg>
+        <p>Il cestino è vuoto.</p>
+      </div>
+    </section>
+
+    <section id="account-view" class="content account" hidden>
+      <h1 class="content-title">Account</h1>
+      <p id="account-message" class="message" hidden></p>
+      <section class="panel profile">
+        <span class="avatar large" id="account-avatar"></span>
+        <div class="profile-text">
+          <h2 id="account-name"></h2>
+          <p id="account-dates" class="muted small"></p>
+          <div class="row">
+            <label class="button soft"><svg class="i"><use href="#i-camera"></use></svg>Cambia foto<input id="avatar-input" type="file" accept="image/*" hidden></label>
+            <button id="btn-avatar-remove" class="ghost">Rimuovi foto</button>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>I tuoi documenti</h2>
+        <div id="account-stats" class="stats"></div>
+      </section>
+      <section class="panel">
+        <h2>Cambia password</h2>
+        <form id="password-form" class="form">
+          <input type="text" name="username" autocomplete="username" hidden id="password-username">
+          <label>Password attuale<input name="current" type="password" autocomplete="current-password" required></label>
+          <label>Nuova password<input name="new" type="password" autocomplete="new-password" required minlength="8"></label>
+          <label>Ripeti la nuova password<input name="confirm" type="password" autocomplete="new-password" required minlength="8"></label>
+          <p class="error" id="password-error" hidden></p>
+          <div><button type="submit" class="primary">Cambia password</button></div>
+        </form>
+        <p class="muted small">Dopo il cambio gli altri dispositivi dovranno rifare l'accesso.</p>
+      </section>
+      <section class="panel danger-zone">
+        <h2>Elimina account</h2>
+        <p class="small">Non potrai più accedere con questo nome. I documenti non vengono distrutti: la cartella viene spostata sul computer in <code>.account-eliminati</code>, da dove si può recuperare.</p>
+        <form id="delete-form" class="form">
+          <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+          <label>Scrivi il tuo nome utente per confermare<input name="confirm" autocapitalize="none" autocorrect="off" autocomplete="off" required></label>
+          <p class="error" id="delete-error" hidden></p>
+          <div><button type="submit" class="danger-fill">Elimina il mio account</button></div>
+        </form>
+      </section>
+    </section>
+  </div>
+</div>
+
+<section id="editor-view" hidden>
+  <header class="toolbar" id="toolbar">
+    <div class="group">
+      <button id="btn-back" class="back" title="Torna ai documenti"><svg class="i"><use href="#i-back"></use></svg>Documenti</button>
+      <span class="doc-title"><i id="doc-dot" class="dot"></i><span id="doc-title"></span></span>
+    </div>
+    <div class="group tools" role="toolbar" aria-label="Strumenti">
+      <div class="segment">
+        <button data-tool="pen" class="tool active" title="Penna"><svg class="i"><use href="#i-pen"></use></svg></button>
+        <button data-tool="highlighter" class="tool" title="Evidenziatore"><svg class="i"><use href="#i-highlighter"></use></svg></button>
+        <button data-tool="eraser" class="tool" title="Gomma"><svg class="i"><use href="#i-eraser"></use></svg></button>
+        <button data-tool="shape" class="tool" title="Forme: disegna e al rilascio diventa linea, curva, cerchio, ellisse, triangolo, quadrato o rettangolo. Con la penna normale: tieni ferma la Pencil a fine tratto"><svg class="i"><use href="#i-shapes"></use></svg></button>
+        <button data-tool="lasso" class="tool" title="Lazzo: cerchia tratti, testi e immagini per spostarli, ricolorarli, duplicarli o eliminarli"><svg class="i"><use href="#i-lasso"></use></svg></button>
+        <button data-tool="text" class="tool" title="Testo"><svg class="i"><use href="#i-text"></use></svg></button>
+        <button data-tool="image" class="tool" title="Immagini: tocca la pagina per aggiungerne una, trascina per spostare"><svg class="i"><use href="#i-image"></use></svg></button>
+        <button id="btn-photo" class="tool" title="Aggiungi una foto (fotocamera o libreria)"><svg class="i"><use href="#i-camera"></use></svg></button>
+      </div>
+      <input id="image-input" type="file" accept="image/*" hidden>
+      <span id="colors" class="colors"></span>
+      <select id="width" title="Spessore">
+        <option value="1">Fine</option>
+        <option value="2" selected>Medio</option>
+        <option value="4">Spesso</option>
+      </select>
+      <div id="eraser-sizes" class="segment" role="radiogroup" aria-label="Grandezza della gomma" hidden>
+        <button class="tool size" data-radius="3" title="Gomma fine: cancella solo il tratto che tocchi"><i class="size-dot" style="--d:6px"></i></button>
+        <button class="tool size" data-radius="7" title="Gomma media"><i class="size-dot" style="--d:11px"></i></button>
+        <button class="tool size" data-radius="14" title="Gomma grande"><i class="size-dot" style="--d:18px"></i></button>
+      </div>
+    </div>
+    <div class="group">
+      <div class="segment">
+        <button id="btn-undo" class="tool" title="Annulla" disabled><svg class="i"><use href="#i-undo"></use></svg></button>
+        <button id="btn-redo" class="tool" title="Ripristina" disabled><svg class="i"><use href="#i-redo"></use></svg></button>
+      </div>
+      <div class="segment">
+        <button id="btn-zoom-out" class="tool" title="Riduci"><svg class="i"><use href="#i-zoom-out"></use></svg></button>
+        <button id="btn-zoom-in" class="tool" title="Ingrandisci"><svg class="i"><use href="#i-zoom-in"></use></svg></button>
+      </div>
+      <div class="segment">
+        <button id="btn-layout" class="tool labeled" title="Layout delle pagine che aggiungerai: tocca per cambiarlo"><svg class="i"><use href="#i-layout"></use></svg><span id="layout-label"></span></button>
+        <button id="btn-add-page" class="tool" title="Aggiungi pagina dopo quella corrente"><svg class="i"><use href="#i-page-add"></use></svg></button>
+        <button id="btn-del-page" class="tool" title="Elimina pagina corrente"><svg class="i"><use href="#i-page-del"></use></svg></button>
+      </div>
+      <label class="toggle" title="Permetti di disegnare anche con il dito">
+        <input type="checkbox" id="finger-draw"><svg class="i"><use href="#i-hand"></use></svg>
+      </label>
+      <span id="devices" class="devices" hidden></span>
+      <span id="status" class="status" aria-live="polite"></span>
+    </div>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <main id="pages" class="pages"></main>
+</section>
+
+{# Progress bar: importing a PDF, opening a document. #}
+<div id="progress" class="progress-overlay" hidden>
+  <div class="progress-card" role="status" aria-live="polite">
+    <img class="progress-icon" src="{{ url_for('static', filename='img/logo.png') }}" alt="">
+    <p id="progress-title" class="progress-title"></p>
+    <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar"></div></div>
+    <p id="progress-detail" class="progress-detail"></p>
+  </div>
+</div>
+
+{# New document: name, note colour, layout of the first page. The options come from the controller. #}
+<dialog id="newdoc-dialog" class="dialog">
+  <form method="dialog" id="newdoc-form">
+    <h2>Nuovo documento</h2>
+    <label class="field">Nome
+      <input id="newdoc-name" required maxlength="120" autocomplete="off">
+    </label>
+    <fieldset>
+      <legend>Colore della nota</legend>
+      <div id="newdoc-colors" class="swatches"></div>
+    </fieldset>
+    <fieldset>
+      <legend>Layout della prima pagina</legend>
+      <div id="newdoc-layouts" class="layout-options"></div>
+    </fieldset>
+    <div class="dialog-actions">
+      <button type="button" id="newdoc-cancel" class="ghost">Annulla</button>
+      <button type="submit" class="primary">Crea</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="layout-dialog" class="dialog">
+  <form method="dialog">
+    <h2>Layout delle nuove pagine</h2>
+    <p class="muted small">Le pagine che aggiungerai da ora avranno questo layout; quelle già presenti non cambiano.</p>
+    <div id="editor-layouts" class="layout-options"></div>
+    <div class="dialog-actions">
+      <button type="submit" class="ghost">Chiudi</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="{{ url_for('static', filename='js/app.js') }}"></script>
+{% endblock %}

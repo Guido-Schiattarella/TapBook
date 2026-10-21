@@ -1,0 +1,5 @@
+# Line endings that the scripts need, whatever the settings of whoever clones the
+# repository: Windows scripts with CRLF, shell scripts with LF.
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh  text eol=lf

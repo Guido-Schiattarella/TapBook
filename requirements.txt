@@ -1,0 +1,7 @@
+cheroot==11.1.2
+cryptography==50.0.2
+Flask==3.1.3
+pillow==13.0.0
+pymupdf==2.0
+# PyMySQL: only to copy the users from the old MariaDB database (earlier versions)
+PyMySQL==1.2.3
