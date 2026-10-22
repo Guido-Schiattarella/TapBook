@@ -6,7 +6,11 @@ wait for it, even in another thread. Writing in a separate process leaves the
 server free: strokes and "undo" are answered at once even during a save.
 
 The process is started at the first save and reused. If it cannot be used
-(e.g. it was killed), the PDF is written in the server process, as before.
+(killed, or not answering within WRITE_TIMEOUT), it is stopped and the PDF is
+written in the server process, as before. On Windows the PDF is always written
+in the server process: there, starting and watching a second Python process
+depends on things the app does not control (antivirus, how the server was
+started), and a writer that never answers would leave the document unsaved.
 """
 import multiprocessing
 import multiprocessing.connection
@@ -14,15 +18,16 @@ import os
 import pickle
 import signal
 import threading
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutureTimeout
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 from . import pdf_store
 
+WRITE_TIMEOUT = 120.0       # seconds: a writer that takes longer is considered stuck
 _lock = threading.Lock()
 _executor = None
-_disabled = False
+_disabled = os.name == "nt"
 
 
 def _start_writer():
@@ -50,10 +55,18 @@ def _get_executor():
         return _executor
 
 
-def _reset(disable=False):
+def _reset(disable=False, kill=False):
     global _executor, _disabled
     with _lock:
         if _executor is not None:
+            if kill:
+                # A writer that does not answer is stopped: it must not replace the
+                # file later, after the PDF has been written in another way.
+                for proc in list(getattr(_executor, "_processes", {}).values()):
+                    try:
+                        proc.kill()
+                    except (OSError, AttributeError):
+                        pass
             _executor.shutdown(wait=False, cancel_futures=True)
         _executor = None
         _disabled = _disabled or disable
@@ -69,7 +82,11 @@ def save_document(path: Path, layer: dict, base_revision: str, pagecache: Path,
             break
         try:
             return executor.submit(pdf_store.save_document, path, layer, base_revision, pagecache,
-                                   pictures_dir=pictures_dir).result()
+                                   pictures_dir=pictures_dir).result(timeout=WRITE_TIMEOUT)
+        except FutureTimeout:
+            # Stuck writer: stopped, and from now on the server writes by itself.
+            _reset(disable=True, kill=True)
+            break
         except (BrokenProcessPool, pickle.PicklingError):
             # Writer process lost (or unusable): a new one, then give up on it. The
             # errors of the writing itself (file changed, disk full…) arrive as they are.

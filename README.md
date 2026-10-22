@@ -179,9 +179,9 @@ You can also add, copy or back up PDFs there directly from the computer.
 - Each stroke is sent to the computer as soon as it is finished, so nothing is
   lost if Safari closes.
 - About one second after the last change, the server writes the strokes, text
-  boxes and images into the PDF with PyMuPDF. The writing happens in a separate
-  process, so new strokes and undo are answered at once even while a large
-  document is being saved.
+  boxes and images into the PDF with PyMuPDF. The document stays usable while the
+  PDF is written: on Linux the writing happens in a separate process (stopped and
+  replaced if it ever stops answering), on Windows inside the server.
 - The annotations are kept editable inside the file. The PDF stays a normal PDF
   that any viewer can open, with your handwriting in it.
 
@@ -236,6 +236,9 @@ TapBook is meant for a **home network**, and it was designed to stay safe there:
   reported to the computer and saved in `client-errors.log` in the data folder
   (`~/.local/share/tapbook/instance` on Linux, `%LOCALAPPDATA%\TapBook` on
   Windows). The file never grows beyond 256 KB.
+- **The editor shows "Il computer non risponde" (the computer is not answering):**
+  the changes are kept and sent as soon as the computer answers. When leaving the
+  editor, TapBook waits a few seconds and then asks whether to leave anyway.
 - **The control panel does not open:** the error is saved in
   `desktop-error.log` in the installation folder and shown in a message box.
 

@@ -2,7 +2,7 @@
 // EditorView methods (see editor_view.js): here `this` is the editor.
 import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { ApiError, NetworkError, apiGet, apiPost, reportError } from '../api.js';
-import { PDF_OPTIONS, RETRY_DELAY } from './shared.js';
+import { PDF_OPTIONS, RETRY_DELAY, SLOW_REQUEST_MS } from './shared.js';
 import { tabId, renewTabId } from '../device.js';
 
 export class SyncMethods {
@@ -21,6 +21,8 @@ export class SyncMethods {
     let reopened = false;
     this.queue = this.queue.then(async () => {
       while (session === this.session && !this.blocked) {
+        // A request that takes too long is shown, instead of a "Modifiche…" that never ends.
+        const slow = setTimeout(() => this.setStatus('Il computer non risponde, attendo…', true), SLOW_REQUEST_MS);
         try {
           const result = await request(session);
           if (session === this.session) this.applyResult(result);
@@ -46,6 +48,8 @@ export class SyncMethods {
           }
           this.setStatus('Rete assente, riprovo…', true);
           await new Promise((r) => setTimeout(r, RETRY_DELAY));
+        } finally {
+          clearTimeout(slow);
         }
       }
     }).catch((err) => console.error(err))  // an unexpected error must not stop the queue

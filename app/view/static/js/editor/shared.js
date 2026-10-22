@@ -63,6 +63,8 @@ export const GESTURE_MAX_POINTS = 5000; // beyond this, the eraser path is sent 
 export const SELECTION_PAD = 6;       // margin of the selection box (PDF points)
 export const TYPING_DELAY = 400;      // ms: typed text is sent in small chunks
 export const RETRY_DELAY = 2000;      // ms: send again if the Wi-Fi network does not answer
+export const SLOW_REQUEST_MS = 10000; // ms: beyond this a request is shown as "not answering"
+export const LEAVE_WAIT_MS = 8000;    // ms: leaving waits this long for the changes on their way
 export const ZOOM_MIN = 0.5;
 export const ZOOM_MAX = 10;
 // Maximum pixels of a canvas. Safari on the iPad stops drawing canvases larger

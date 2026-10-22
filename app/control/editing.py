@@ -715,13 +715,20 @@ class EditController:
         with room.lock:
             if room.closed or room.saving or room.state not in ("pending", "error"):
                 return
+            try:
+                job = room.doc.prepare_save()
+            except Exception:
+                # Never leave a save "in progress" that is not: try again shortly.
+                room.state = "error"
+                self._start_timer(room, RETRY_DELAY)
+                room.changed.notify_all()
+                return
             room.state = "saving"
             room.saving = True
-            job = room.doc.prepare_save()
         with room.save_lock:
             try:
                 room.pending_save = (job, room.doc.write_save(job), None)
-            except Exception as e:     # handled by _finish_save, with the lock held
+            except BaseException as e:     # handled by _finish_save, with the lock held
                 room.pending_save = (job, None, e)
         with room.lock:
             self._finish_save(room)
@@ -740,13 +747,17 @@ class EditController:
             room.state = "pending"
             self._save_now(room)
             return
+        if error is None:
+            try:
+                room.doc.finish_save(job, result)
+            except Exception as e:             # never leave the room without a state
+                error = e
         if error is not None:
             room.state = "error"               # e.g. disk full: try again shortly
             self._start_timer(room, RETRY_DELAY)
-        else:
-            room.doc.finish_save(job, result)
-            if not changed_meanwhile:
-                room.state = "saved"
+            changed_meanwhile = False          # the retry saves everything
+        elif not changed_meanwhile:
+            room.state = "saved"
         if changed_meanwhile:
             self._start_timer(room, AUTOSAVE_DELAY)   # the changes made meanwhile get their own save
         room.changed.notify_all()

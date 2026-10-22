@@ -17,7 +17,7 @@
 // to EditorView (at the end of this file); shared.js holds shared constants and functions.
 import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { apiGetBinary, apiPost } from './api.js';
-import { PDF_OPTIONS, COLORS, ERASER_DEFAULT, ERASER_PREF,
+import { PDF_OPTIONS, COLORS, ERASER_DEFAULT, ERASER_PREF, LEAVE_WAIT_MS,
   TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_PREF } from './editor/shared.js';
 import { SyncMethods } from './editor/sync.js';
 import { InputMethods } from './editor/input.js';
@@ -175,11 +175,23 @@ export class EditorView {
   async leave() {
     this.deactivateText();
     document.activeElement?.blur();
-    await this.queue;
+    // The changes on their way are waited for, but never for ever: if the computer
+    // does not answer, the user decides whether to leave anyway.
+    const drained = await this.queueDrained();
+    if (!drained && !window.confirm('Il computer non risponde e le ultime modifiche non sono ancora arrivate.\n'
+        + 'Uscire comunque? Quelle modifiche potrebbero andare perse.')) return;
+    if (!drained) {
+      this.abandoned = true;      // close() does not wait for the queue again
+      this.app.navigate(this.path.split('/').slice(0, -1).join('/'));
+      return;
+    }
     if (!this.session) return;
-    try {
-      await this.app.request('/api/edit/close', { session: this.session });
-    } catch (e) {
+    // The computer saves and answers with the view to show; if it does not answer
+    // in time (or answers with an error), go back to the folder anyway.
+    const closing = this.app.request('/api/edit/close', { session: this.session }).then(() => true, () => false);
+    const answered = await Promise.race([closing, new Promise((r) => setTimeout(() => r(false), 2 * LEAVE_WAIT_MS))]);
+    if (!answered) {
+      this.abandoned = true;
       this.app.navigate(this.path.split('/').slice(0, -1).join('/'));
     }
   }
@@ -195,9 +207,20 @@ export class EditorView {
     } catch { /* leaving anyway */ }
   }
 
+  // True when the changes on their way have reached the computer, false if it does
+  // not answer within LEAVE_WAIT_MS.
+  queueDrained() {
+    return Promise.race([this.queue.then(() => true),
+      new Promise((r) => setTimeout(() => r(false), LEAVE_WAIT_MS))]);
+  }
+
+  // Leaving the editor for another view: never waits for ever.
   async close() {
-    await this.queue;
-    if (this.session) await apiPost('/api/edit/close', { session: this.session }).catch(() => {});
+    if (!this.abandoned) await this.queueDrained();
+    this.abandoned = false;
+    if (!this.session) return;
+    const closing = apiPost('/api/edit/close', { session: this.session }).catch(() => {});
+    await Promise.race([closing, new Promise((r) => setTimeout(r, LEAVE_WAIT_MS))]);
   }
 }
 
