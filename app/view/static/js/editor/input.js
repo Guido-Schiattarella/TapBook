@@ -2,7 +2,7 @@
 // EditorView methods (see editor_view.js): here `this` is the editor.
 import { apiPost, reportError } from '../api.js';
 import { COLORS, HIGHLIGHTER_FACTOR, MIN_POINT_DIST, STABILIZER, HOLD_MS, HOLD_MOVE_PX, SNAP_PX, SHAPE_MAX_POINTS, GESTURE_POINT_DIST, GESTURE_MAX_POINTS, uid, ERASER_PREF, touches, isStylus,
-  WIDTH_PREF, widthFromSlider, sliderFromWidth, TEXT_SIZE_PREF, TOOL_KEYS, PREDICT_MS, PREDICT_MAX_PX } from './shared.js';
+  WIDTH_PREF, widthFromSlider, sliderFromWidth, TEXT_SIZE_PREF, TOOL_KEYS, PREDICT_MS, PREDICT_MAX_PX, STAB_FULL_PX, STAB_NONE_PX } from './shared.js';
 
 export class InputMethods {
   // =====================================================================
@@ -230,7 +230,9 @@ export class InputMethods {
     for (const raw of points) {
       g.lastRaw = raw;
       const f = g.filtered;
-      g.filtered = [f[0] + (raw[0] - f[0]) * (1 - STABILIZER), f[1] + (raw[1] - f[1]) * (1 - STABILIZER), raw[2]];
+      const jump = Math.hypot(raw[0] - f[0], raw[1] - f[1]) * this.scale;   // on screen
+      const k = STABILIZER * Math.min(1, Math.max(0, (STAB_NONE_PX - jump) / (STAB_NONE_PX - STAB_FULL_PX)));
+      g.filtered = [f[0] + (raw[0] - f[0]) * (1 - k), f[1] + (raw[1] - f[1]) * (1 - k), raw[2]];
       const last = pts[pts.length - 1];
       if (Math.hypot(g.filtered[0] - last[0], g.filtered[1] - last[1]) >= MIN_POINT_DIST) {
         pts.push(g.filtered.map((n) => Math.round(n * 100) / 100));

@@ -20,6 +20,12 @@ export const MIN_POINT_DIST = 0.4;    // PDF points between two consecutive samp
 // tip; while writing, the preview also joins the last point to where the Pencil
 // really is (see drawLive), and the last real point is added at the end.
 export const STABILIZER = 0.25;
+// The stabilisation is for hand tremor, i.e. small movements between two samples:
+// full up to STAB_FULL_PX on screen, none beyond STAB_NONE_PX. Pens that send few
+// samples (or a fast stroke) make big jumps: smoothing them would cut the curves,
+// shrink the figure and leave shapes open.
+export const STAB_FULL_PX = 1.5;
+export const STAB_NONE_PX = 6;
 // The preview runs a little ahead of the Pencil, where its speed takes it in
 // PREDICT_MS (never more than PREDICT_MAX_PX on screen), to hide part of the
 // display delay. Only the preview: the saved stroke has the real points.

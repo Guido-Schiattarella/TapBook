@@ -23,6 +23,11 @@ import math
 SAMPLES = 96              # points of the resampled stroke
 MIN_LENGTH = 6.0          # shorter strokes (PDF points) do not become shapes
 CLOSED_GAP = 0.18         # ends closer than this fraction of the length: closed shape
+# Shapes drawn fast are rarely closed exactly: the stroke stops short or goes past
+# the start. How far it turns around its own centre decides instead (in turns):
+CLOSED_TURN = 0.75        # at least three quarters of a turn: a closed shape left open
+OVERSHOOT_TURN = 1.05     # more than a full turn: cut at the first turn...
+MAX_TURN = 1.6            # ...unless it goes round much more (a scribble, not a shape)
 LINE_DEVIATION = 0.075    # maximum distance from the straight line (fraction of the length) for a line
 AXIS_SNAP_DEG = 7.0       # within these degrees of horizontal/vertical, straighten
 EQUAL_RATIO = 0.86        # sides (or axes) more similar than this become equal: square, circle
@@ -104,6 +109,21 @@ def _best_polygon(pts, k):
     return verts, _polygon_error(pts, verts)
 
 
+def _turns(pts):
+    """Cumulative angle (in turns) swept by the stroke around its centroid, at each point."""
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    out, total = [0.0], 0.0
+    prev = math.atan2(pts[0][1] - cy, pts[0][0] - cx)
+    for p in pts[1:]:
+        ang = math.atan2(p[1] - cy, p[0] - cx)
+        d = (ang - prev + math.pi) % (2 * math.pi) - math.pi
+        total += d
+        out.append(abs(total) / (2 * math.pi))
+        prev = ang
+    return out
+
+
 def _rotate(p, ang, c=(0.0, 0.0)):
     ca, sa = math.cos(ang), math.sin(ang)
     x, y = p[0] - c[0], p[1] - c[1]
@@ -137,11 +157,51 @@ def _fit_ellipse(pts):
     if ia <= 0 or ib <= 0:
         return None
     a, b = 1 / math.sqrt(ia), 1 / math.sqrt(ib)
+    e = {"c": (cx, cy), "a": a, "b": b, "ang": ang}
+    e["err"] = _ellipse_error(e, pts)
+    return e
+
+
+def _ellipse_params(e, pts):
+    """Parameter (angle on the ellipse) of each point."""
+    (cx, cy), a, b = e["c"], e["a"], e["b"]
+    out = []
+    for p in pts:
+        x, y = _rotate(p, -e["ang"], (cx, cy))
+        out.append(math.atan2((y - cy) / b, (x - cx) / a))
+    return out
+
+
+def _ellipse_error(e, pts):
+    (cx, cy), a, b = e["c"], e["a"], e["b"]
     err = 0.0
-    for (x, y) in local:
-        t = math.atan2((y - cy) / b, (x - cx) / a)
+    for p, t in zip(pts, _ellipse_params(e, pts)):
+        x, y = _rotate(p, -e["ang"], (cx, cy))
         err += math.hypot(x - cx - a * math.cos(t), y - cy - b * math.sin(t))
-    return {"c": (cx, cy), "a": a, "b": b, "ang": ang, "err": err / len(pts)}
+    return err / len(pts)
+
+
+def _fit_ellipse_open(pts):
+    """Ellipse of a stroke that does not go all the way round. The fit above takes
+    the mean of the points as the centre, which is pulled towards the drawn part:
+    so the missing stretch is filled with points of the ellipse found so far and
+    the fit repeated, until the centre settles. The error is measured on the
+    drawn points only."""
+    e = _fit_ellipse(pts)
+    for _ in range(6):
+        if e is None:
+            return None
+        ts = sorted(t % (2 * math.pi) for t in _ellipse_params(e, pts))
+        gaps = [(ts[(i + 1) % len(ts)] - ts[i]) % (2 * math.pi) for i in range(len(ts))]
+        i = max(range(len(gaps)), key=gaps.__getitem__)
+        n = int(len(pts) * gaps[i] / (2 * math.pi - gaps[i])) if gaps[i] < 2 * math.pi else 0
+        (cx, cy), a, b = e["c"], e["a"], e["b"]
+        fill = [_rotate((cx + a * math.cos(ts[i] + gaps[i] * k / (n + 1)), cy + b * math.sin(ts[i] + gaps[i] * k / (n + 1))),
+                        e["ang"], (cx, cy)) for k in range(1, n + 1)]
+        e = _fit_ellipse(pts + fill)
+    if e is not None:
+        e["err"] = _ellipse_error(e, pts)
+    return e
 
 
 def _ellipse_perimeter(a, b):
@@ -281,6 +341,16 @@ def recognize(points, targets=(), tolerance=8.0):
     pts = _resample(raw, SAMPLES)
     length = _length(pts)
     closed = _dist(pts[0], pts[-1]) <= CLOSED_GAP * length
+    turns = _turns(pts)
+    gap_closed = False
+    if OVERSHOOT_TURN < turns[-1] <= MAX_TURN:
+        # Went past the start: only the first turn is the shape.
+        cut = next(i for i, t in enumerate(turns) if t >= 1.0)
+        pts = _resample(pts[:cut + 1], SAMPLES)
+        length = _length(pts)
+        closed = True
+    elif not closed and CLOSED_TURN <= turns[-1] <= MAX_TURN:
+        closed = gap_closed = True   # stopped short of the start: the gap is closed by the figure
 
     if not closed:
         a, b = pts[0], pts[-1]
@@ -303,9 +373,17 @@ def recognize(points, targets=(), tolerance=8.0):
         return "curve", curve
 
     loop = pts[:-1]
-    ellipse = _fit_ellipse(loop)
-    tri, tri_err = _best_polygon(loop, 3)
-    quad, quad_err = _best_polygon(loop, 4)
+    ellipse = _fit_ellipse_open(loop) if gap_closed else _fit_ellipse(loop)
+    poly_pts = loop
+    if gap_closed:
+        # The missing stretch is closed with a straight segment for triangles and
+        # quadrilaterals: it fits a polygon whose last side was cut short, not an
+        # ellipse whose arc was (otherwise the gap would be a free side for them).
+        a, b = pts[-1], pts[0]
+        n = max(1, int(_dist(a, b) / (length / SAMPLES)))
+        poly_pts = pts + [(a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n) for i in range(1, n)]
+    tri, tri_err = _best_polygon(poly_pts, 3)
+    quad, quad_err = _best_polygon(poly_pts, 4)
     # A quadrilateral with an almost flat corner is a triangle with an extra point on a side.
     quad_angles = [_angle_at(quad[i - 1], quad[i], quad[(i + 1) % 4]) for i in range(4)]
     if max(quad_angles) >= FLAT_ANGLE:
