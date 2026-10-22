@@ -66,6 +66,9 @@ export class EditorView {
     this.noticeTimer = null;
     this.reset();
     this.bindInput();
+    // Page reloaded or closed: the computer is told right away that this tab
+    // leaves the document (otherwise it would count as connected until it goes idle).
+    window.addEventListener('pagehide', () => this.closeOnExit());
     new ResizeObserver(() => {
       document.documentElement.style.setProperty('--toolbar-h', this.toolbarEl.offsetHeight + 'px');
     }).observe(this.toolbarEl);
@@ -100,6 +103,10 @@ export class EditorView {
   // Showing / hiding the view (decided by the controller)
   // =====================================================================
   async show(data) {
+    // Shown again (reopening after a pause): the previous PDF and its pages are
+    // freed first, otherwise every reopening would keep one more copy in memory.
+    this.els?.forEach((v) => this.discardPage(v));
+    this.pdf?.destroy();
     this.reset();
     this.session = data.session;
     this.path = data.path;
@@ -156,7 +163,7 @@ export class EditorView {
   }
 
   hide() {
-    this.els.forEach((v) => v.task?.cancel());
+    this.els.forEach((v) => this.discardPage(v));
     this.innerEl.replaceChildren();
     this.pdf?.destroy();
     this.reset();
@@ -174,6 +181,17 @@ export class EditorView {
     } catch (e) {
       this.app.navigate(this.path.split('/').slice(0, -1).join('/'));
     }
+  }
+
+  closeOnExit() {
+    if (!this.session) return;
+    try {
+      fetch('/api/edit/close', {
+        method: 'POST', credentials: 'same-origin', keepalive: true,
+        headers: { 'X-Requested-With': 'notes-app', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: this.session }),
+      }).catch(() => {});
+    } catch { /* leaving anyway */ }
   }
 
   async close() {

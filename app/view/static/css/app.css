@@ -429,6 +429,7 @@ mark { background: #fff0a8; color: inherit; border-radius: 4px; padding: 0 2px; 
 .slider-value { flex: none; width: 42px; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text-2); text-align: right; }
 .width-preview { display: inline-block; flex: none; border-radius: 50%; background: currentColor; }
 .page canvas.live { z-index: 1; pointer-events: none; }
+.page canvas.tail { width: 0; height: 0; left: 0; top: 0; visibility: hidden; will-change: transform; }
 
 /* Lasso */
 .pages.tool-lasso .page { cursor: crosshair; }

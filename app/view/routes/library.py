@@ -15,7 +15,8 @@ def register(app):
         """The view asks to open a path: the controller answers with the data and
         the view to switch to (list or editor)."""
         data = body()
-        return view_response(controllers().navigation.open(g.username, data.get("path", ""), data.get("page")))
+        return view_response(controllers().navigation.open(g.username, data.get("path", ""), data.get("page"),
+                                                           data.get("device")))
 
     @app.post("/api/library/mkdir")
     @api

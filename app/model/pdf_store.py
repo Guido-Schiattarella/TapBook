@@ -378,6 +378,55 @@ def smooth_polyline(points) -> list:
     return out
 
 
+class _InkWriter:
+    """Adds Ink annotations to a page, like page.add_ink_annot, but fast on pages
+    with many strokes: pymupdf gives every new annotation a unique /NM name by
+    reading the names of all the annotations already on the page, so adding n
+    strokes costs n² (seconds on a page full of notes). Here the names already
+    used are read once, and the points are transformed with plain arithmetic.
+    The resulting annotation is the same. Rotated pages (rare) use the normal path."""
+
+    def __init__(self, page: pymupdf.Page, derotation: pymupdf.Matrix):
+        self.page, self.m = page, derotation
+        self.fast = page.rotation == 0
+        if self.fast:
+            mu = pymupdf.mupdf
+            self.pdf_page = pymupdf._as_pdf_page(page.this)
+            ctm = mu.FzMatrix()
+            mu.pdf_page_transform(self.pdf_page, mu.FzRect(0), ctm)
+            inv = mu.fz_invert_matrix(ctm)
+            # visible coordinates → unrotated page → PDF user space, in one matrix
+            self.t = pymupdf.Matrix(derotation) * pymupdf.Matrix(inv.a, inv.b, inv.c, inv.d, inv.e, inv.f)
+            self.names = set(pymupdf.JM_get_annot_id_list(self.pdf_page))
+            self.next_id = 0
+
+    def add(self, pts) -> pymupdf.Annot:
+        if not self.fast:
+            return self.page.add_ink_annot([[tuple(pymupdf.Point(x, y) * self.m) for x, y in pts]])
+        mu = pymupdf.mupdf
+        a, b, c, d, e, f = self.t
+        annot = mu.pdf_create_annot(self.pdf_page, mu.PDF_ANNOT_INK)
+        obj = mu.pdf_annot_obj(annot)
+        doc = self.pdf_page.doc()
+        stroke = mu.pdf_new_array(doc, 2 * len(pts))
+        for x, y in pts:
+            mu.pdf_array_push_real(stroke, a * x + c * y + e)
+            mu.pdf_array_push_real(stroke, b * x + d * y + f)
+        inklist = mu.pdf_new_array(doc, 1)
+        mu.pdf_array_push(inklist, stroke)
+        mu.pdf_dict_put(obj, pymupdf.PDF_NAME("InkList"), inklist)
+        mu.pdf_update_annot(annot)
+        while f"{pymupdf.JM_annot_id_stem}-A{self.next_id}" in self.names:
+            self.next_id += 1
+        name = f"{pymupdf.JM_annot_id_stem}-A{self.next_id}"
+        self.names.add(name)
+        mu.pdf_dict_puts(obj, "NM", mu.pdf_new_string(name, len(name)))
+        doc.m_internal.resynth_required = 0
+        result = pymupdf.Annot(annot)
+        pymupdf.annot_postprocess(self.page, result)
+        return result
+
+
 def _add_annotations(page: pymupdf.Page, pdata: dict, pictures_dir: Path | None):
     # Coordinates arrive in the page's "visible" space (origin top left, like
     # pdf.js). For rotated pages they are mapped back to the unrotated space.
@@ -393,13 +442,14 @@ def _add_annotations(page: pymupdf.Page, pdata: dict, pictures_dir: Path | None)
         annot = page.add_stamp_annot(rect, stamp=picture.read_bytes())
         annot.set_info(subject=SUBJECT_PREFIX + img["id"], title="notes-app")
         annot.update()
+    ink = _InkWriter(page, m)
     for s in pdata["strokes"]:
         xy = [(x, y) for x, y, _ in s["points"]]
         # Geometric shapes already have the right points (sharp corners): no smoothing.
-        pts = [pymupdf.Point(x, y) * m for x, y in (xy if s.get("shape") else smooth_polyline(xy))]
+        pts = xy if s.get("shape") else smooth_polyline(xy)
         if len(pts) == 1:
-            pts.append(pts[0] + (0.01, 0.01))
-        annot = page.add_ink_annot([[(q.x, q.y) for q in pts]])
+            pts = [pts[0], (pts[0][0] + 0.01, pts[0][1] + 0.01)]
+        annot = ink.add(pts)
         annot.set_colors(stroke=_hex_to_rgb(s["color"]))
         annot.set_border(width=s["width"])
         if s["tool"] == "highlighter":

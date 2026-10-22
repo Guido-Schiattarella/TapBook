@@ -20,18 +20,18 @@ class NavigationController:
                 "newDocument": self.library.new_document_defaults(),
                 "shell": self.library.shell(username)}
 
-    def editor_view(self, username: str, rel: str, page=None) -> dict:
-        result = {"view": "editor", **self.editing.open(username, rel)}
+    def editor_view(self, username: str, rel: str, page=None, device=None) -> dict:
+        result = {"view": "editor", **self.editing.open(username, rel, device)}
         result["color"] = self.library.document_color(username, result["path"])
         # Opened from a search result: the view goes to the matching page.
         if isinstance(page, int) and not isinstance(page, bool) and 0 <= page < len(result["pages"]):
             result["startPage"] = page
         return result
 
-    def open(self, username: str, rel: str, page=None) -> dict:
+    def open(self, username: str, rel: str, page=None, device=None) -> dict:
         if self.library.kind(username, rel) == "dir":
             return self.library_view(username, self.library.list_folder(username, rel))
-        return self.editor_view(username, rel, page)
+        return self.editor_view(username, rel, page, device)
 
     def search_view(self, username: str, query) -> dict:
         return {"view": "search", **self.library.search(username, query), "shell": self.library.shell(username)}

@@ -112,7 +112,7 @@ export class PagesMethods {
     this.observer?.disconnect();
     this.observer = new IntersectionObserver((entries) => this.onVisibility(entries),
       { root: this.pagesEl, rootMargin: '1200px 0px' });
-    this.els.forEach((v) => v.task?.cancel());
+    this.els.forEach((v) => this.discardPage(v));
     this.els.clear();
     this.innerEl.replaceChildren();
     for (const page of this.pages) this.innerEl.append(this.createPageEl(page).el);
@@ -131,12 +131,12 @@ export class PagesMethods {
     this.pages = pages;
     const keep = new Set(pages.map((p) => p.id));
     for (const [id, v] of this.els) {
-      if (!keep.has(id)) { v.task?.cancel(); this.observer.unobserve(v.el); v.el.remove(); this.els.delete(id); }
+      if (!keep.has(id)) { this.discardPage(v); this.observer.unobserve(v.el); v.el.remove(); this.els.delete(id); }
     }
     for (const page of pages) {
       let v = this.els.get(page.id);
       if (v && (v.w !== page.w || v.h !== page.h)) {   // size changed: rebuild it
-        this.observer.unobserve(v.el); v.el.remove(); this.els.delete(page.id); v = null;
+        this.discardPage(v); this.observer.unobserve(v.el); v.el.remove(); this.els.delete(page.id); v = null;
       }
       if (!v) v = this.createPageEl(page);
       else { this.renderTexts(page); this.renderImages(page); if (v.rendered) this.drawInk(page); }

@@ -25,7 +25,7 @@ LOCAL_ONLY = ("127.0.0.1", "localhost", "::1")
 
 def _make_server(config: Config, c: Controllers, host: str, port: int):
     # VIEW: the meeting point between the iPad browser and the controllers.
-    app = create_app(config, c.auth, c.library, c.navigation, c.editing, c.account)
+    app = create_app(config, c.auth, c.library, c.navigation, c.editing, c.account, c.diagnostics)
     server = wsgi.Server((host, port), app, numthreads=THREADS, server_name="TapBook", timeout=TIMEOUT)
     if config.https:
         from .system.tls import REDIRECTED, RedirectingSSLAdapter, ensure_certificates

@@ -31,7 +31,7 @@ import copy
 import uuid
 from pathlib import Path
 
-from . import pdf_store
+from . import pdf_store, save_worker
 
 
 def new_id() -> str:
@@ -240,12 +240,12 @@ class OpenDocument:
         return page, index
 
     # --- persistence ---------------------------------------------------------------------------
-    def _take_snapshot(self):
+    def _take_snapshot(self, pages=None):
         """Remembers the app's notes for every page of the file as they were at the
         last save: it is the "base" used to recognise what another program changed."""
         self.snapshot = [{"strokes": {s["id"] for s in p["strokes"]},
                           "texts": {t["id"]: t["text"] for t in p["texts"]},
-                          "images": {i["id"] for i in p.get("images", [])}} for p in self.pages]
+                          "images": {i["id"] for i in p.get("images", [])}} for p in (pages or self.pages)]
 
     def merge_external(self):
         """The file on disk changed: the other program's changes are merged with
@@ -308,6 +308,30 @@ class OpenDocument:
             {**{k: p[k] for k in ("id", "src", "blank", "w", "h", "strokes", "texts")},
              "layout": p.get("layout"), "images": p.get("images", [])} for p in self.pages]}
 
+    # Saving in three steps, so the document stays usable while the PDF is being
+    # written: prepare_save takes a copy of the notes (quick, with the document
+    # locked), write_save writes the PDF from that copy (slow, without the lock,
+    # while changes go on) and finish_save records the result (locked again).
+    def prepare_save(self) -> dict:
+        def copy_page(p):
+            # Every item is copied: later changes replace an item's values (update)
+            # or add and remove items, never touch the copy being written.
+            return {**{k: p[k] for k in ("id", "src", "blank", "w", "h")},
+                    "strokes": [dict(x) for x in p["strokes"]], "texts": [dict(x) for x in p["texts"]],
+                    "layout": p.get("layout"), "images": [dict(x) for x in p.get("images", [])]}
+        layer = {"docId": self.doc_id, "nextLayout": self.next_layout,
+                 "pages": [copy_page(p) for p in self.pages]}
+        return {"layer": layer, "revision": self.revision}
+
+    def write_save(self, job: dict):
+        """Writes the prepared copy (raises pdf_store.RevisionMismatch like save)."""
+        return save_worker.save_document(self.path, job["layer"], job["revision"], self.pagecache,
+                                         pictures_dir=self.pictures_dir)
+
+    def finish_save(self, job: dict, result):
+        self.revision, self.last_saved = result
+        self._after_save(job["layer"]["pages"])
+
     def save(self):
         """Writes the document to the PDF on disk. Raises pdf_store.RevisionMismatch
         if the file was changed by another program in the meantime."""
@@ -324,10 +348,12 @@ class OpenDocument:
             base_bytes=self.last_saved, backup_to=backup_to, pictures_dir=self.pictures_dir)
         self._after_save()
 
-    def _after_save(self):
+    def _after_save(self, saved_pages=None):
         # The file now has the pages in the saved order: update their position.
         # Pages no longer present lose src: if restored, they come from the cache.
-        order = {p["id"]: i for i, p in enumerate(self.pages)}
+        # saved_pages: what was written, when changes went on during the writing.
+        saved_pages = saved_pages or self.pages
+        order = {p["id"]: i for i, p in enumerate(saved_pages)}
         for p in self.all_pages.values():
             p["src"] = order.get(p["id"])
-        self._take_snapshot()
+        self._take_snapshot(saved_pages)

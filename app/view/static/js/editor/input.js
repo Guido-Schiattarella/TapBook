@@ -1,8 +1,8 @@
 // VIEW — editor, input from Apple Pencil, finger and mouse; strokes, geometric shapes (press and hold), eraser.
 // EditorView methods (see editor_view.js): here `this` is the editor.
-import { apiPost } from '../api.js';
+import { apiPost, reportError } from '../api.js';
 import { COLORS, HIGHLIGHTER_FACTOR, MIN_POINT_DIST, STABILIZER, HOLD_MS, HOLD_MOVE_PX, SNAP_PX, SHAPE_MAX_POINTS, GESTURE_POINT_DIST, GESTURE_MAX_POINTS, uid, ERASER_PREF, touches, isStylus,
-  WIDTH_PREF, widthFromSlider, sliderFromWidth, TEXT_SIZE_PREF, TOOL_KEYS } from './shared.js';
+  WIDTH_PREF, widthFromSlider, sliderFromWidth, TEXT_SIZE_PREF, TOOL_KEYS, PREDICT_MS, PREDICT_MAX_PX } from './shared.js';
 
 export class InputMethods {
   // =====================================================================
@@ -109,10 +109,21 @@ export class InputMethods {
     // Safari: prevents zooming the whole web page (we handle zoom ourselves).
     document.addEventListener('gesturestart', (e) => e.preventDefault());
 
-    this.pagesEl.addEventListener('pointerdown', (e) => this.pointerDown(e));
-    this.pagesEl.addEventListener('pointermove', (e) => this.pointerMove(e));
-    this.pagesEl.addEventListener('pointerup', (e) => this.pointerUp(e));
-    this.pagesEl.addEventListener('pointercancel', (e) => this.pointerUp(e));
+    // An error while handling the Pencil must never leave a stroke "open" (the pen
+    // would stop writing until the page is reloaded): the gesture is closed and
+    // the editor goes on.
+    const safe = (handler) => (e) => {
+      try { handler.call(this, e); } catch (err) { this.recoverInput(err); }
+    };
+    this.pagesEl.addEventListener('pointerdown', safe(this.pointerDown));
+    this.pagesEl.addEventListener('pointermove', safe(this.pointerMove));
+    this.pagesEl.addEventListener('pointerup', safe(this.pointerUp));
+    this.pagesEl.addEventListener('pointercancel', safe(this.pointerUp));
+    // Safari can lose the pointer capture without sending "pointerup": the stroke
+    // ends there instead of staying open.
+    this.pagesEl.addEventListener('lostpointercapture', safe((e) => {
+      if (this.gesture && e.pointerId === this.gesture.pointerId) this.pointerUp(e);
+    }));
     // A single tap (not a scroll) creates text boxes and images.
     this.pagesEl.addEventListener('click', (e) => this.pageClick(e));
 
@@ -146,8 +157,9 @@ export class InputMethods {
     return this.fingerDraw && !this.pinch;
   }
 
-  pagePoint(page, e) {
-    const rect = this.els.get(page.id).el.getBoundingClientRect();
+  // Point of the page under the pointer (PDF points). rect: the page's position,
+  // read once per stroke (reading it for every Pencil sample slows the stroke down).
+  pagePoint(page, e, rect = this.els.get(page.id).el.getBoundingClientRect()) {
     return [
       (e.clientX - rect.left) / this.scale,
       (e.clientY - rect.top) / this.scale,
@@ -163,23 +175,25 @@ export class InputMethods {
     if (!page) return;
     e.preventDefault();
     try { pageEl.setPointerCapture(e.pointerId); } catch { /* the stroke goes on anyway */ }
-    const pt = this.pagePoint(page, e);
+    const rect = pageEl.getBoundingClientRect();
+    const pt = this.pagePoint(page, e, rect);
     if (this.tool === 'eraser') {
-      this.gesture = { type: 'erase', page, pointerId: e.pointerId, pointerType: e.pointerType,
-        ids: new Set(), path: [], radius: this.eraserRadius };
+      this.gesture = { type: 'erase', page, rect, pointerId: e.pointerId, pointerType: e.pointerType,
+        ids: new Set(), newIds: new Set(), path: [], radius: this.eraserRadius };
       this.showEraserCursor(page, pt);
       this.eraseAt(pt);
     } else if (this.tool === 'lasso') {
       this.clearSelection();
-      this.gesture = { type: 'lasso', page, pointerId: e.pointerId, pointerType: e.pointerType, points: [pt] };
+      this.gesture = { type: 'lasso', page, rect, pointerId: e.pointerId, pointerType: e.pointerType, points: [pt] };
     } else {
       const tool = this.tool === 'highlighter' ? 'highlighter' : 'pen';   // "shapes" writes like the pen
       const stroke = { id: uid(), tool, color: this.color,
         width: tool === 'highlighter' ? this.width * HIGHLIGHTER_FACTOR : this.width, points: [pt] };
-      this.gesture = { type: 'draw', page, pointerId: e.pointerId, pointerType: e.pointerType, stroke,
-        filtered: pt, lastRaw: pt, tip: pt, shapeTool: this.tool === 'shape', hold: { x: e.clientX, y: e.clientY } };
+      this.gesture = { type: 'draw', page, rect, pointerId: e.pointerId, pointerType: e.pointerType, stroke,
+        filtered: pt, lastRaw: pt, tip: pt, shapeTool: this.tool === 'shape', hold: { x: e.clientX, y: e.clientY },
+        motion: { x: e.clientX, y: e.clientY, t: e.timeStamp, vx: 0, vy: 0 } };
       if (!this.gesture.shapeTool) this.armHold(this.gesture);
-      this.startLive(page);
+      this.startLive(this.gesture);
       this.drawLive(this.gesture);
     }
   }
@@ -190,7 +204,8 @@ export class InputMethods {
     if (e.pointerId !== g.pointerId) return;
     e.preventDefault();
     const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
-    const points = (coalesced.length ? coalesced : [e]).map((ev) => this.pagePoint(g.page, ev));
+    const samples = coalesced.length ? coalesced : [e];
+    const points = samples.map((ev) => this.pagePoint(g.page, ev, g.rect));
     if (g.type === 'erase') {
       points.forEach((pt) => this.eraseAt(pt));
       this.showEraserCursor(g.page, points[points.length - 1]);
@@ -221,11 +236,34 @@ export class InputMethods {
         pts.push(g.filtered.map((n) => Math.round(n * 100) / 100));
       }
     }
-    // The preview reaches the tip: the last real point or, where the browser
-    // provides it, the point where the Pencil is about to be.
+    // The preview reaches the tip and a little beyond: where the browser predicts
+    // the Pencil is going or, if it does not, where the current speed takes it in
+    // a few milliseconds (at most a few pixels). This hides part of the delay of
+    // the screen; the extra bit is redrawn at every movement and never saved.
     const predicted = e.getPredictedEvents ? e.getPredictedEvents() : [];
-    g.tip = predicted.length ? this.pagePoint(g.page, predicted[predicted.length - 1]) : g.lastRaw;
+    if (predicted.length) {
+      g.tip = this.pagePoint(g.page, predicted[predicted.length - 1], g.rect);
+    } else {
+      g.tip = this.predictTip(g, samples[samples.length - 1]);
+    }
     this.drawLive(g);
+  }
+
+  // Tip a little ahead of the last sample, following the (smoothed) speed.
+  predictTip(g, ev) {
+    const m = g.motion;
+    const dt = ev.timeStamp - m.t;
+    if (dt > 0 && dt < 100) {
+      const k = Math.min(1, dt / 16);          // speed smoothed over about one frame
+      m.vx += ((ev.clientX - m.x) / dt - m.vx) * k;
+      m.vy += ((ev.clientY - m.y) / dt - m.vy) * k;
+    }
+    m.x = ev.clientX; m.y = ev.clientY; m.t = ev.timeStamp;
+    let dx = m.vx * PREDICT_MS, dy = m.vy * PREDICT_MS;
+    const len = Math.hypot(dx, dy);
+    if (len > PREDICT_MAX_PX) { dx *= PREDICT_MAX_PX / len; dy *= PREDICT_MAX_PX / len; }
+    const raw = g.lastRaw;
+    return [raw[0] + dx / this.scale, raw[1] + dy / this.scale, raw[2]];
   }
 
   pointerUp(e) {
@@ -304,20 +342,28 @@ export class InputMethods {
 
   // Pen lifted: with the Shapes tool the stroke becomes a shape right away; with the
   // pen only if the wait had already fired. Then the stroke goes to the controller.
-  async finishStroke(g) {
+  // The stroke takes its place in the queue at once, when the pen is lifted: an
+  // eraser or undo that follows reaches the controller after it, even when the
+  // shape recognition is still on its way (otherwise the eraser would find
+  // nothing to erase and the stroke would reappear).
+  finishStroke(g) {
     const request = g.shapeTool && g.stroke.points.length >= 2 ? this.recognize(g) : g.holdRequest;
-    if (request && !g.converted) {
-      // Wait already fired (pen) or Shapes tool: wait for the controller's answer.
-      if (this.applyShape(g, await request)) this.drawInk(g.page);
-    }
-    this.send({ type: 'addStroke', page: g.page.id, stroke: g.stroke });
+    this.enqueue(async (session) => {
+      // The recognition was queued before this request: here it is already answered.
+      if (request && !g.converted && this.applyShape(g, await request)) this.drawInk(g.page);
+      return apiPost('/api/edit/op', { session, op: { type: 'addStroke', page: g.page.id, stroke: g.stroke } });
+    });
   }
 
-  // Sends the eraser path to the controller (it decides which strokes to remove).
+  // Sends the eraser path to the controller (it decides which strokes to remove),
+  // with the strokes already hidden here: it confirms them if the path really
+  // reaches them (see ERASE_TOLERANCE in the controller).
   flushErase(g) {
     const path = g.path.map(([x, y]) => [x, y]);
     g.path = g.path.slice(-1);
-    return path.length ? this.send({ type: 'erase', page: g.page.id, path, radius: g.radius }) : Promise.resolve();
+    const ids = [...g.newIds];
+    g.newIds.clear();
+    return path.length ? this.send({ type: 'erase', page: g.page.id, path, radius: g.radius, ids }) : Promise.resolve();
   }
 
   // Eraser circle: as large as the eraser, centred on the tip.
@@ -341,6 +387,23 @@ export class InputMethods {
     else this.hideEraserCursor();
   }
 
+  // Unexpected error during a gesture: it is closed without sending it, and the
+  // page is redrawn from the data (what was already sent stays).
+  recoverInput(err) {
+    console.error(err);
+    reportError(err?.message || err, 'editor input', err?.stack);
+    const g = this.gesture;
+    this.gesture = null;
+    if (!g) return;
+    clearTimeout(g.holdTimer);
+    if (g.type === 'erase') g.ids.forEach((id) => this.hiddenStrokes.delete(id));
+    try {
+      if (g.type === 'draw') this.endLive(g.page);
+      this.hideEraserCursor();
+      this.drawInk(g.page);
+    } catch (e) { console.error(e); }
+  }
+
   // A second finger turns the gesture into a zoom: the finger stroke is cancelled.
   abortFingerGesture() {
     const g = this.gesture;
@@ -359,17 +422,22 @@ export class InputMethods {
     const g = this.gesture;
     const { page, ids, path } = g;
     const last = path[path.length - 1];
-    if (!last || Math.hypot(pt[0] - last[0], pt[1] - last[1]) >= GESTURE_POINT_DIST) path.push(pt);
-    if (path.length >= GESTURE_MAX_POINTS) this.flushErase(g);
+    const far = !last || Math.hypot(pt[0] - last[0], pt[1] - last[1]) >= GESTURE_POINT_DIST;
+    if (far) path.push(pt);
     const candidates = [...page.strokes, ...this.pendingOn(page)];
     let changed = false;
     for (const s of candidates) {
       if (!ids.has(s.id) && !this.hiddenStrokes.has(s.id) && touches(s, pt, g.radius)) {
         ids.add(s.id);
+        g.newIds.add(s.id);
         this.hiddenStrokes.add(s.id);
         changed = true;
       }
     }
+    // A point that touched something always goes to the controller, even if it is
+    // close to the previous one: the stroke hidden here must be erased there too.
+    if (changed && !far && (pt[0] !== last[0] || pt[1] !== last[1])) path.push(pt);
+    if (path.length >= GESTURE_MAX_POINTS) this.flushErase(g);
     if (changed) this.drawInk(page);
   }
 

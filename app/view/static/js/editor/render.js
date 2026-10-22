@@ -1,7 +1,7 @@
 // VIEW — editor, drawing: PDF background in regions (strong zoom too), saved strokes and stroke preview.
 // EditorView methods (see editor_view.js): here `this` is the editor.
 import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
-import { HIGHLIGHT_ALPHA, MAX_CANVAS_PIXELS, REGION_MARGINS } from './shared.js';
+import { HIGHLIGHT_ALPHA, MAX_CANVAS_PIXELS, REGION_MARGINS, TAIL_BOX, CANVAS_BUDGET } from './shared.js';
 
 export class RenderMethods {
   // Part of the page to draw, in CSS pixels relative to the page, and resolution
@@ -77,8 +77,10 @@ export class RenderMethods {
       }
     }
     if (v.renderId !== id || !v.rendered) return;
+    this.freeCanvas(v.base);
     v.base.replaceWith(next);
     v.base = next;
+    this.enforceCanvasBudget(v);
     this.firstDrawn?.();          // the first page is visible: the opening progress bar finishes
     this.firstDrawn = null;
   }
@@ -101,7 +103,37 @@ export class RenderMethods {
     v.region = null;
     v.renderId = (v.renderId || 0) + 1;
     v.task?.cancel();
-    v.base.width = v.base.height = v.ink.width = v.ink.height = 0;
+    for (const c of [v.base, v.ink, v.live]) this.freeCanvas(c);
+  }
+
+  // Page taken off the screen for good (removed, or pages rebuilt): its canvases
+  // are freed at once.
+  discardPage(v) {
+    v.task?.cancel();
+    v.renderId = (v.renderId || 0) + 1;
+    for (const c of [v.base, v.ink, v.live, v.tail]) this.freeCanvas(c);
+  }
+
+  // Memory limit for the pages' canvases: Safari on the iPad reloads (or blanks)
+  // a page whose canvases together use too much memory. When the drawn pages
+  // exceed CANVAS_BUDGET pixels, those off the screen are released, the
+  // farthest first (they are drawn again when they come back near).
+  enforceCanvasBudget(keep) {
+    const drawn = [...this.els.values()].filter((v) => v.rendered);
+    const pixels = (v) => v.base.width * v.base.height + v.ink.width * v.ink.height;
+    let total = drawn.reduce((sum, v) => sum + pixels(v), 0);
+    if (total <= CANVAS_BUDGET) return;
+    const view = this.pagesEl.getBoundingClientRect();
+    const centre = (view.top + view.bottom) / 2;
+    const far = drawn.filter((v) => v !== keep).map((v) => {
+      const r = v.el.getBoundingClientRect();
+      return { v, onScreen: r.bottom > view.top && r.top < view.bottom, dist: Math.abs((r.top + r.bottom) / 2 - centre) };
+    }).filter((x) => !x.onScreen).sort((a, b) => b.dist - a.dist);
+    for (const { v } of far) {
+      if (total <= CANVAS_BUDGET) break;
+      total -= pixels(v);
+      this.releasePage(v);
+    }
   }
 
   // Context of the strokes canvas, with coordinates in PDF points.
@@ -168,6 +200,9 @@ export class RenderMethods {
       }
     }
     const g = this.gesture;
+    // The pen stroke in progress is drawn on this canvas (see drawLive): a redraw
+    // during the stroke (e.g. a change from another device) keeps it.
+    if (g?.type === 'draw' && g.page.id === page.id && g.stroke.tool !== 'highlighter') this.drawStroke(ctx, g.stroke);
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
     if (g?.type === 'lasso' && g.page.id === page.id) {
@@ -184,40 +219,120 @@ export class RenderMethods {
   }
 
   // Preview of the stroke while the pen moves (immediately, without waiting for
-  // the computer). It lives on its own canvas above the strokes, redrawn whole at
-  // every movement: the curve can run right up to the tip of the Pencil (the
-  // last piece, not yet a final point, is redrawn as the pen moves on), and the
-  // highlighter does not need the whole page to be redrawn.
-  startLive(page) {
-    const v = this.els.get(page.id);
+  // the computer). The curve is drawn a piece at a time as the points arrive
+  // (never redrawn whole, so long strokes cost as little as short ones): the pen
+  // directly on the strokes canvas; the highlighter on a canvas of its own above
+  // it, drawn opaque and made transparent by the canvas itself (the pieces
+  // overlap without darker joints).
+  // The last stretch, from the end of the curve to the tip of the Pencil (and a
+  // little ahead, see input.js), is on a small canvas that follows the tip:
+  // it is erased and redrawn at every movement, so the line is always under the
+  // tip. Being small, it costs almost no memory (Safari on the iPad has a limit
+  // for all the canvases of a page together).
+  startLive(g) {
+    const v = this.els.get(g.page.id);
     if (!v?.rendered || !v.region) return;
-    if (!v.live) {
-      v.live = document.createElement('canvas');
-      v.live.className = 'live';
-      v.liveCtx = v.live.getContext('2d', { desynchronized: true });  // lower latency where supported
-      v.ink.after(v.live);
+    const dpr = window.devicePixelRatio || 1;
+    if (!v.tail) {
+      v.tail = document.createElement('canvas');
+      v.tail.className = 'live tail';
+      v.tailCtx = v.tail.getContext('2d', { desynchronized: true });   // lower latency where supported
+      v.el.append(v.tail);
     }
-    this.placeCanvas(v.live, v.region);
+    v.tail.width = v.tail.height = Math.round(TAIL_BOX * dpr);
+    Object.assign(v.tail.style, { width: TAIL_BOX + 'px', height: TAIL_BOX + 'px' });
+    const highlighter = g.stroke.tool === 'highlighter';
+    if (highlighter) {
+      if (!v.live) {
+        v.live = document.createElement('canvas');
+        v.live.className = 'live';
+        v.liveCtx = v.live.getContext('2d', { desynchronized: true });
+        v.ink.after(v.live);
+      }
+      this.placeCanvas(v.live, v.region);
+      this.liveStyle(v.liveCtx, v, g.stroke);
+    }
+    v.tail.style.opacity = highlighter ? String(HIGHLIGHT_ALPHA) : '';
+    g.curveCtx = highlighter ? v.liveCtx : this.inkContext(v);
+    if (!highlighter) this.liveStyle(g.curveCtx, v, g.stroke);
+    g.drawn = 1;          // points of the curve already drawn
+  }
+
+  liveStyle(ctx, v, stroke) {
+    const { x, y, r } = v.region;
+    const k = this.scale * r;
+    ctx.setTransform(k, 0, 0, k, -x * r, -y * r);
+    this.strokeStyle(ctx, stroke);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
   }
 
   drawLive(g) {
     const v = this.els.get(g.page.id);
-    if (!v?.live || !v.region) return;
-    const ctx = v.liveCtx;
-    const { x, y, r } = v.region;
-    const k = this.scale * r;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, v.live.width, v.live.height);
-    ctx.setTransform(k, 0, 0, k, -x * r, -y * r);
-    const s = g.stroke;
-    const tip = g.tip;
-    const last = s.points[s.points.length - 1];
-    const reach = !s.shape && tip && (tip[0] !== last[0] || tip[1] !== last[1]);
-    this.drawStroke(ctx, reach ? { ...s, points: [...s.points, tip] } : s);
+    if (!v?.tail || !v.region || !g.curveCtx) return;
+    const s = g.stroke, pts = s.points, n = pts.length;
+    const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const ctx = g.curveCtx;
+    if (s.shape) {
+      // Turned into a geometric shape: drawn whole, once, without the tail.
+      if (g.drawn !== Infinity) {
+        if (s.tool === 'highlighter') {
+          ctx.clearRect(0, 0, g.page.w, g.page.h);
+          this.drawStroke(ctx, s);
+          this.liveStyle(ctx, v, s);
+        } else {
+          this.drawInk(g.page);     // the freehand version disappears, the shape is drawn
+        }
+        v.tail.style.visibility = 'hidden';
+        g.drawn = Infinity;
+      }
+      return;
+    }
+    // New pieces of the curve: the same quadratic curves as the final drawing
+    // (drawStroke); point j completes the curve through point j-1. The style is
+    // set every time: a redraw of the page in the meantime may have changed it.
+    this.liveStyle(ctx, v, s);
+    for (let j = Math.max(2, g.drawn); j < n; j++) {
+      const start = j === 2 ? pts[0] : mid(pts[j - 2], pts[j - 1]);
+      const end = mid(pts[j - 1], pts[j]);
+      ctx.beginPath();
+      ctx.moveTo(start[0], start[1]);
+      ctx.quadraticCurveTo(pts[j - 1][0], pts[j - 1][1], end[0], end[1]);
+      ctx.stroke();
+    }
+    g.drawn = Math.max(g.drawn, n);
+    // Tail, on the small canvas centred on the last point.
+    const last = pts[n - 1];
+    const tip = g.tip || last;
+    const from = n >= 2 ? (n === 2 ? pts[0] : mid(pts[n - 2], last)) : last;
+    const dpr = window.devicePixelRatio || 1;
+    const left = Math.round(last[0] * this.scale - TAIL_BOX / 2), top = Math.round(last[1] * this.scale - TAIL_BOX / 2);
+    v.tail.style.transform = `translate(${left}px, ${top}px)`;
+    v.tail.style.visibility = 'visible';
+    const t = v.tailCtx;
+    t.setTransform(1, 0, 0, 1, 0, 0);
+    t.clearRect(0, 0, v.tail.width, v.tail.height);
+    const k = this.scale * dpr;
+    t.setTransform(k, 0, 0, k, -left * dpr, -top * dpr);
+    this.strokeStyle(t, s);
+    t.globalAlpha = 1;
+    t.globalCompositeOperation = 'source-over';
+    t.beginPath();
+    t.moveTo(from[0], from[1]);
+    t.quadraticCurveTo(last[0], last[1], (last[0] + tip[0]) / 2 + 0.005, (last[1] + tip[1]) / 2 + 0.005);
+    t.lineTo(tip[0] + 0.01, tip[1] + 0.01);
+    t.stroke();
   }
 
   endLive(page) {
     const v = this.els.get(page.id);
-    if (v?.live) v.live.width = v.live.height = 0;
+    if (v?.live) v.live.width = v.live.height = 0;       // frees its memory right away
+    if (v?.tail) v.tail.style.visibility = 'hidden';
+  }
+
+  // Frees a canvas's memory right away (Safari on the iPad would keep it until it
+  // cleans up, and the limit for all the canvases of a page is low).
+  freeCanvas(c) {
+    if (c) c.width = c.height = 0;
   }
 }

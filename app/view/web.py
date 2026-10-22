@@ -19,6 +19,7 @@ from flask import Flask
 
 from ..control.account import AccountController
 from ..control.auth import AuthController
+from ..control.diagnostics import DiagnosticsController
 from ..control.editing import EditController
 from ..control.library import LibraryController
 from ..control.navigation import NavigationController
@@ -40,7 +41,7 @@ def _load_secret_key(data_dir: Path) -> bytes:
 
 def create_app(config, auth: AuthController, library: LibraryController,
                navigation: NavigationController, editing: EditController,
-               account: AccountController) -> Flask:
+               account: AccountController, diagnostics: DiagnosticsController) -> Flask:
     app = Flask(__name__)
     app.config.update(
         SECRET_KEY=_load_secret_key(config.data_dir),
@@ -52,7 +53,8 @@ def create_app(config, auth: AuthController, library: LibraryController,
         MAX_CONTENT_LENGTH=config.max_upload_mb * 1024 * 1024,
     )
     app.extensions["tapbook"] = SimpleNamespace(config=config, auth=auth, library=library,
-                                                navigation=navigation, editing=editing, account=account)
+                                                navigation=navigation, editing=editing, account=account,
+                                                diagnostics=diagnostics)
     app.after_request(security_headers)
     register_all(app)
     return app

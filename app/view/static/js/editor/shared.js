@@ -20,6 +20,12 @@ export const MIN_POINT_DIST = 0.4;    // PDF points between two consecutive samp
 // tip; while writing, the preview also joins the last point to where the Pencil
 // really is (see drawLive), and the last real point is added at the end.
 export const STABILIZER = 0.25;
+// The preview runs a little ahead of the Pencil, where its speed takes it in
+// PREDICT_MS (never more than PREDICT_MAX_PX on screen), to hide part of the
+// display delay. Only the preview: the saved stroke has the real points.
+export const PREDICT_MS = 12;
+export const PREDICT_MAX_PX = 6;
+export const TAIL_BOX = 160;          // side (CSS pixels) of the small canvas with the end of the stroke
 // Stroke thickness (PDF points), chosen with a slider: its position (0-100) maps
 // to the thickness on a logarithmic scale, so the thin end has fine steps.
 export const WIDTH_MIN = 0.2;
@@ -55,6 +61,9 @@ export const ZOOM_MAX = 10;
 // This keeps strokes and layout visible and sharp at any zoom.
 export const MAX_CANVAS_PIXELS = 8 * 1024 * 1024;
 export const REGION_MARGINS = [0.5, 0.25, 0];  // margin around the visible part (fraction of the screen)
+// Pixels of all the pages' canvases together (4 bytes each: 40 M ≈ 160 MB), well
+// below the limit Safari on the iPad sets for a page's canvases.
+export const CANVAS_BUDGET = 40 * 1024 * 1024;
 
 export const uid = () => (crypto.randomUUID
   ? crypto.randomUUID().replaceAll('-', '')

@@ -4,7 +4,8 @@
 // search, trash, account) in the same page. Every user action becomes a
 // request to the controller on the computer; the response carries the data and
 // the name of the view to switch to. The view decides nothing on its own.
-import { apiPost, apiPostProgress } from './api.js';
+import { tabId } from './device.js';
+import { apiPost, apiPostProgress, reportError } from './api.js';
 import { Progress } from './progress.js';
 import { LibraryView } from './library_view.js';
 import { EditorView } from './editor_view.js';
@@ -52,6 +53,8 @@ class App {
   // Opening a path or creating a document shows the progress bar (if it takes
   // more than a moment); progress: { title, delay } for other cases.
   async request(url, body, { push = true, progress = this.autoProgress(url, body) } = {}) {
+    // Opening: the tab says who it is (a reload of the same tab is not one more device).
+    if (url === '/api/open') body = { ...body, device: tabId() };
     const result = progress ? await this.withProgress(url, body, progress) : await apiPost(url, body);
     if (result.redirect) { location.href = result.redirect; return result; }  // e.g. account deleted
     this.show(result, { push });
@@ -143,6 +146,10 @@ class App {
     this.views[name].show(result);
   }
 }
+
+// Unexpected errors are reported to the computer (see reportError in api.js).
+window.addEventListener('error', (e) => reportError(e.message, `${e.filename}:${e.lineno}:${e.colno}`, e.error?.stack));
+window.addEventListener('unhandledrejection', (e) => reportError(e.reason?.message || e.reason, 'promise', e.reason?.stack));
 
 const app = new App();
 app.load({ push: false });

@@ -3,6 +3,7 @@
 import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { ApiError, apiGet, apiPost } from '../api.js';
 import { PDF_OPTIONS, RETRY_DELAY } from './shared.js';
+import { tabId, renewTabId } from '../device.js';
 
 export class SyncMethods {
   // =====================================================================
@@ -27,6 +28,9 @@ export class SyncMethods {
         } catch (e) {
           if (e instanceof ApiError && e.status === 410 && !reopened) {
             reopened = true;
+            // Replaced by another tab with the same identifier (a duplicated tab):
+            // this tab takes a new one, so the two do not keep replacing each other.
+            if (e.data.reason === 'replaced') renewTabId();
             await this.reopen();
             session = this.session;
             continue;
@@ -85,7 +89,7 @@ export class SyncMethods {
   // Reopens the document: the view receives the current version from the
   // controller (with the changes made meanwhile by other devices or on the computer).
   async reopen() {
-    const data = await apiPost('/api/open', { path: this.path });
+    const data = await apiPost('/api/open', { path: this.path, device: tabId() });
     if (data.view !== 'editor') throw new Error('Documento non più disponibile');
     const { queue, inFlight, pendingStrokes } = this;
     await this.show(data);
@@ -102,11 +106,16 @@ export class SyncMethods {
     const page = ev.page && this.page(ev.page);
     if (ev.page && !page) return;
     switch (ev.event) {
-      case 'strokeAdded':
+      case 'strokeAdded': {
+        // Confirmation of a stroke of this iPad, added at the end: it is already on
+        // screen exactly like that (as "pending"), so the page is not redrawn
+        // (with many strokes, redrawing could make the next stroke stutter).
+        const own = this.pendingStrokes.has(ev.stroke.id) && ev.index === page.strokes.length;
         if (!page.strokes.some((s) => s.id === ev.stroke.id)) page.strokes.splice(ev.index, 0, ev.stroke);
         this.pendingStrokes.delete(ev.stroke.id);
-        this.drawInk(page);
+        if (!own) this.drawInk(page);
         break;
+      }
       case 'strokeChanged': {
         const i = page.strokes.findIndex((s) => s.id === ev.stroke.id);
         if (i >= 0) { page.strokes[i] = ev.stroke; this.drawInk(page); }

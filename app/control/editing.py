@@ -26,7 +26,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..model import layouts, pdf_store
+from ..model import layouts, pdf_store, save_worker
 from ..model.document import OpenDocument, PageStructureChanged, new_id
 from ..model.pictures import InvalidPicture, prepare_picture
 from . import geometry, shapes
@@ -53,6 +53,13 @@ MAX_TEXTS_PER_PAGE = 2000
 MAX_GESTURE_POINTS = 10000           # points of an eraser path or a lasso outline
 ERASER_RADIUS = 7.0                  # default eraser radius (PDF points)
 ERASER_RADIUS_RANGE = (1.0, 60.0)    # allowed radii (the view offers Fine, Medium, Large)
+# The view hides right away the strokes the eraser seems to touch and names them in
+# the operation; the controller still checks each one against the path, with this
+# margin (PDF points) for the small differences between the two computations.
+# Without it a stroke "touched" on the iPad but just missed here would reappear.
+ERASE_TOLERANCE = 1.5
+MAX_ERASE_IDS = 5000
+DEVICE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")   # browser tab identifier
 DUPLICATE_OFFSET = 15.0              # offset of the copies made with the lasso
 
 # Kinds of page items and the model methods that add/remove them.
@@ -65,7 +72,8 @@ class SessionGone(ControlError):
     """The device is no longer connected to the document. The reason tells the
     view what to do:
       idle      no changes for too long → the view reopens by itself from the current version
-      unknown   server restarted or unknown session → the view reopens by itself"""
+      unknown   server restarted or unknown session → the view reopens by itself
+      replaced  the same browser tab opened the document again (e.g. page reload)"""
     status = 410
 
     def __init__(self, reason: str):
@@ -170,6 +178,12 @@ class Room:
         self.changed = threading.Condition(self.lock)
         self.timer = None
         self.closed = False
+        # Writing the PDF happens outside `lock` (see EditController._save):
+        # save_lock is held only while writing, and the result waits in
+        # pending_save until it is recorded with `lock` held.
+        self.save_lock = threading.Lock()
+        self.saving = False
+        self.pending_save = None
 
     def broadcast(self, events, exclude=None):
         """Queues the events for all devices (except `exclude`)."""
@@ -182,9 +196,10 @@ class Room:
 
 
 class Client:
-    def __init__(self, room: Room):
+    def __init__(self, room: Room, device=None):
         self.id = secrets.token_urlsafe(16)
         self.room = room
+        self.device = device                 # browser tab it belongs to (see open)
         self.done, self.undone = [], []      # this device's history
         self.text_before = {}                # text at the start of the edit in progress
         self.outbox = []                     # events to deliver to this device
@@ -208,9 +223,13 @@ class EditController:
         threading.Thread(target=self._idle_loop, daemon=True, name="chiusura-inattivi").start()
 
     # --- opening and closing ------------------------------------------------------------
-    def open(self, username: str, rel: str) -> dict:
+    def open(self, username: str, rel: str, device=None) -> dict:
         """Connects a device to the document. If it is already open on another
-        device, it joins the same room and sees the current state right away."""
+        device, it joins the same room and sees the current state right away.
+        device: identifier of the browser tab (it survives a page reload). The
+        same tab opening the document again (reload, reopening) replaces its
+        previous connection instead of counting as one more device."""
+        device = device if isinstance(device, str) and DEVICE_RE.match(device) else None
         rel = self.library.open_document(username, rel)  # NotFound if it is not one of the user's PDFs
         key = (username, rel)
         while True:
@@ -227,8 +246,11 @@ class EditController:
             with room.lock:
                 if room.closed:
                     continue      # it was closing: a new one is created
-                client = Client(room)
+                client = Client(room, device)
                 room.clients[client.id] = client
+                if device:
+                    for old in [c for c in room.clients.values() if c is not client and c.device == device]:
+                        self._detach(old, "replaced")
                 client.sent_state = room.state
                 # The background PDF is not sent here: the view downloads it separately, as a
                 # binary file in chunks (GET /api/edit/background), with the progress bar.
@@ -262,9 +284,11 @@ class EditController:
                 self._detach(client, "closed")
 
     def flush_all(self):
-        """On server shutdown: saves all open documents."""
+        """On server shutdown: saves all open documents, then stops the process
+        that writes the PDFs."""
         for client in list(self.clients.values()):
             self._detach(client, "shutdown")
+        save_worker.shutdown()
 
     # --- operations from the view ----------------------------------------------------------
     def apply(self, username: str, client_id: str, op) -> dict:
@@ -428,8 +452,16 @@ class EditController:
         the controller decides which strokes it touched and tells the model to remove them."""
         doc, pid = client.room.doc, _id(op.get("page"))
         radius = _num(op.get("radius", ERASER_RADIUS), *ERASER_RADIUS_RANGE)
-        hit = geometry.strokes_touched(doc.page(pid)["strokes"], _gesture(op.get("path")), radius)
-        removed = _remove_items(doc, pid, {"strokes": set(hit)})
+        strokes = doc.page(pid)["strokes"]
+        path = _gesture(op.get("path"))
+        hit = set(geometry.strokes_touched(strokes, path, radius))
+        # Strokes the view already hid: confirmed if they are within the margin.
+        named = op.get("ids")
+        if isinstance(named, list) and len(named) <= MAX_ERASE_IDS:
+            named = {x for x in named if isinstance(x, str)} - hit
+            candidates = [st for st in strokes if st["id"] in named]
+            hit.update(geometry.strokes_touched(candidates, path, radius + ERASE_TOLERANCE))
+        removed = _remove_items(doc, pid, {"strokes": hit})
         if removed:
             self._push(client, undo=lambda: _restore_items(doc, pid, removed),
                        redo=lambda: _remove_items(doc, pid, _ids_of(removed)), execute=False)
@@ -675,36 +707,88 @@ class EditController:
         room.timer.start()
 
     def _save(self, room):
-        """The controller tells the model to write the PDF to the file system."""
+        """Autosave (timer thread). The PDF is written WITHOUT holding the room's
+        lock: strokes, undo and the other operations of the devices go on at
+        once instead of waiting for the file (which can take up to a second on
+        large documents). Only copying the notes and recording the result
+        happen with the lock held."""
         with room.lock:
-            if room.state not in ("pending", "error"):
+            if room.closed or room.saving or room.state not in ("pending", "error"):
                 return
             room.state = "saving"
-            merged = []
-            room.doc.subscribe(merged.append)    # news from the merge → to every device
+            room.saving = True
+            job = room.doc.prepare_save()
+        with room.save_lock:
             try:
-                for _ in range(MERGE_ATTEMPTS):
-                    try:
-                        room.doc.save()
-                        break
-                    except pdf_store.RevisionMismatch:
-                        # The file changed on disk: merge the changes and try again.
-                        room.doc.merge_external()
-                else:
-                    raise pdf_store.RevisionMismatch()
+                room.pending_save = (job, room.doc.write_save(job), None)
+            except Exception as e:     # handled by _finish_save, with the lock held
+                room.pending_save = (job, None, e)
+        with room.lock:
+            self._finish_save(room)
+
+    def _finish_save(self, room):
+        """Records the result of a background write (with room.lock held). If
+        another thread already did it, there is nothing left to do."""
+        outcome, room.pending_save = room.pending_save, None
+        if outcome is None:
+            return
+        room.saving = False
+        job, result, error = outcome
+        changed_meanwhile = room.state == "pending"     # changes arrived during the writing
+        if isinstance(error, (pdf_store.RevisionMismatch, PageStructureChanged)):
+            # The file changed on disk: merge and save again, as a whole.
+            room.state = "pending"
+            self._save_now(room)
+            return
+        if error is not None:
+            room.state = "error"               # e.g. disk full: try again shortly
+            self._start_timer(room, RETRY_DELAY)
+        else:
+            room.doc.finish_save(job, result)
+            if not changed_meanwhile:
                 room.state = "saved"
-            except (pdf_store.RevisionMismatch, PageStructureChanged):
-                # The pages changed on the computer while the document is in use:
-                # the version in use wins, the computer's version goes to the trash.
-                merged.append(self._in_use_wins(room))
-                room.state = "saved"
-            except Exception:
-                room.state = "error"           # e.g. disk full: try again shortly
-                self._start_timer(room, RETRY_DELAY)
-            finally:
-                room.doc.unsubscribe(merged.append)
-            room.broadcast(merged)
-            room.changed.notify_all()
+        if changed_meanwhile:
+            self._start_timer(room, AUTOSAVE_DELAY)   # the changes made meanwhile get their own save
+        room.changed.notify_all()
+
+    def _save_now(self, room):
+        """Saves right away, with room.lock held (last device leaving, or after a
+        merge). A background write still running is waited for and recorded first:
+        it does not need the lock while writing, so waiting cannot block it."""
+        while room.saving and room.pending_save is None:
+            with room.save_lock:      # the writer holds it while writing
+                pass
+            if room.saving and room.pending_save is None:
+                time.sleep(0.005)     # prepared but not started writing yet
+        self._finish_save(room)
+        if room.state not in ("pending", "error"):
+            return
+        room.state = "saving"
+        merged = []
+        room.doc.subscribe(merged.append)    # news from the merge → to every device
+        try:
+            for _ in range(MERGE_ATTEMPTS):
+                try:
+                    room.doc.save()
+                    break
+                except pdf_store.RevisionMismatch:
+                    # The file changed on disk: merge the changes and try again.
+                    room.doc.merge_external()
+            else:
+                raise pdf_store.RevisionMismatch()
+            room.state = "saved"
+        except (pdf_store.RevisionMismatch, PageStructureChanged):
+            # The pages changed on the computer while the document is in use:
+            # the version in use wins, the computer's version goes to the trash.
+            merged.append(self._in_use_wins(room))
+            room.state = "saved"
+        except Exception:
+            room.state = "error"           # e.g. disk full: try again shortly
+            self._start_timer(room, RETRY_DELAY)
+        finally:
+            room.doc.unsubscribe(merged.append)
+        room.broadcast(merged)
+        room.changed.notify_all()
 
     def _in_use_wins(self, room) -> dict:
         folder = self.library.folder(room.username)
@@ -739,8 +823,7 @@ class EditController:
             if last:
                 if room.timer:
                     room.timer.cancel()
-                if room.state in ("pending", "error"):
-                    self._save(room)
+                self._save_now(room)
                 room.closed = True
                 self._trash_unused_pictures(room)
             else:

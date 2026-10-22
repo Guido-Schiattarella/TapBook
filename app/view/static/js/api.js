@@ -97,3 +97,21 @@ export function apiGetBinary(url, params = {}, onProgress = null) {
     xhr.send();
   });
 }
+
+// Unexpected errors are reported to the computer (client-errors.log in its data
+// folder): on the iPad nobody sees the browser console. At most a few per minute.
+const reported = [];
+export function reportError(message, source, stack) {
+  const now = Date.now();
+  while (reported.length && now - reported[0] > 60000) reported.shift();
+  if (reported.length >= 5) return;
+  reported.push(now);
+  try {
+    fetch('/api/client-error', {
+      method: 'POST', credentials: 'same-origin', keepalive: true,
+      headers: { 'X-Requested-With': 'notes-app', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: String(message).slice(0, 2000), source: String(source || '').slice(0, 500),
+        stack: String(stack || '').slice(0, 4000), page: location.pathname + location.search, agent: navigator.userAgent }),
+    }).catch(() => {});
+  } catch { /* nothing else to do */ }
+}

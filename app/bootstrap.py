@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from .config import Config
 from .control.account import AccountController
 from .control.auth import AuthController
+from .control.diagnostics import DiagnosticsController
 from .control.editing import EditController
 from .control.library import LibraryController
 from .control.navigation import NavigationController
+from .model.client_log import ClientLog
 from .model.dbserver import EmbeddedDBError, migrate_legacy_users
 from .model.user_store import UserStore
 
@@ -25,6 +27,7 @@ class Controllers:
     editing: EditController
     navigation: NavigationController
     account: AccountController
+    diagnostics: DiagnosticsController
 
 
 def prepare_storage(config: Config) -> UserStore:
@@ -58,4 +61,5 @@ def build_controllers(config: Config) -> Controllers:
     editing = EditController(library, config.data_dir / "pagecache", config.edit_idle_minutes)
     navigation = NavigationController(library, editing)
     account = AccountController(auth, library, editing, config.notes_root)
-    return Controllers(auth, library, editing, navigation, account)
+    diagnostics = DiagnosticsController(ClientLog(config.data_dir))
+    return Controllers(auth, library, editing, navigation, account, diagnostics)
