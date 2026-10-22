@@ -1,7 +1,7 @@
 // VIEW — editor, communication with the controller on the computer: operation queue, responses, notifications (listen) and model events.
 // EditorView methods (see editor_view.js): here `this` is the editor.
 import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
-import { ApiError, apiGet, apiPost } from '../api.js';
+import { ApiError, NetworkError, apiGet, apiPost, reportError } from '../api.js';
 import { PDF_OPTIONS, RETRY_DELAY } from './shared.js';
 import { tabId, renewTabId } from '../device.js';
 
@@ -36,6 +36,14 @@ export class SyncMethods {
             continue;
           }
           if (e instanceof ApiError && e.status) { this.handleError(e); return; }
+          if (!(e instanceof NetworkError)) {
+            // Not a network problem (an error in the page): retrying would loop for
+            // ever and block the queue, and leaving the editor with it.
+            console.error(e);
+            reportError(e?.message || e, 'editor queue', e?.stack);
+            this.showBanner('Si è verificato un errore: ricarica il documento.');
+            return;
+          }
           this.setStatus('Rete assente, riprovo…', true);
           await new Promise((r) => setTimeout(r, RETRY_DELAY));
         }

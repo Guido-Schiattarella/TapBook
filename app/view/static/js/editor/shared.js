@@ -37,7 +37,11 @@ export const TAIL_BOX = 160;          // side (CSS pixels) of the small canvas w
 export const WIDTH_MIN = 0.2;
 export const WIDTH_MAX = 16;
 export const WIDTH_DEFAULT = 2;
-export const WIDTH_PREF = 'notes.penWidth';
+export const WIDTH_PREF = 'notes.penWidth';            // single thickness of earlier versions
+export const WIDTHS_PREF = 'notes.widths';             // choices of each tool (see widths.js)
+// Standard sizes, the same for every tool (the highlighter is HIGHLIGHTER_FACTOR times wider).
+export const WIDTH_PRESETS = { small: 1, medium: 2, large: 4 };
+export const WIDTH_TOOLS = ['pen', 'highlighter', 'shape'];   // tools with their own custom thickness
 export const widthFromSlider = (v) => Math.round(WIDTH_MIN * (WIDTH_MAX / WIDTH_MIN) ** (v / 100) * 100) / 100;
 export const sliderFromWidth = (w) => Math.round(100 * Math.log(w / WIDTH_MIN) / Math.log(WIDTH_MAX / WIDTH_MIN));
 // Font size of text boxes (PDF points).

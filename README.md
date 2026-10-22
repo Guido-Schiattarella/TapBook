@@ -32,8 +32,10 @@ ordinary PDF files in a folder on your computer.
 ## Features
 
 **Writing**
-- Pen and highlighter in 6 colours, with a thickness slider from very thin
-  (0.2 pt) to very thick (16 pt); eraser in three sizes. The stroke follows the
+- Pen and highlighter in 6 colours. Thickness: three standard sizes (small,
+  medium, large) or a custom one chosen with a slider from very thin (0.2 pt) to
+  very thick (16 pt), remembered separately for pen, highlighter and shapes.
+  Eraser in three sizes. The stroke follows the
   Pencil tip closely, with only light smoothing.
 - Full Apple Pencil support with palm rejection: the Pencil writes and the finger
   scrolls. All the Pencil's high-frequency samples are used, so strokes are smooth.
@@ -49,6 +51,8 @@ ordinary PDF files in a folder on your computer.
 - Keyboard shortcuts (with a keyboard connected to the iPad): **P** pen,
   **H** highlighter, **E** eraser, **L** lasso, **F** shapes, **T** text,
   **Esc** to leave a text box, **Cmd+Z** / **Cmd+Shift+Z** to undo and redo.
+- Pens with buttons: the side button switches to the eraser and, pressed again,
+  back to the previous tool; the eraser end of the pen erases while it touches.
 - Undo and redo for the whole session.
 - Pinch to zoom from 0.5× to 10×, without redrawing the pages from scratch.
 

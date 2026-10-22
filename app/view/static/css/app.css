@@ -421,7 +421,16 @@ mark { background: #fff0a8; color: inherit; border-radius: 4px; padding: 0 2px; 
 .pages.tool-text .textbox.active .resize { display: block; }
 
 /* Thickness and font size sliders */
-/* Both controls have the same width: switching tool never moves the toolbar (or the pages). */
+/* Options of the chosen tool (colours, thickness, font size, eraser sizes) in a
+   block of fixed width: switching tool never moves the toolbar (or the pages). */
+.tool-options { display: inline-flex; align-items: center; gap: 8px; width: 640px; max-width: 100%; }
+#width-presets[hidden] { display: none; }
+#width-presets .tool.size { min-width: 34px; padding: 0 8px; }
+#width-presets .tool.custom { font-size: 13px; font-weight: 600; padding: 0 10px; }
+.size-dot.filled { background: currentColor; }
+.tool-options #width-control { width: 190px; }
+.tool-options #text-size-control { width: 432px; }   /* = thickness slider + standard sizes */
+/* Both sliders have the same width: switching tool never moves the toolbar (or the pages). */
 .slider-control { display: inline-flex; align-items: center; gap: 6px; width: 204px; box-sizing: border-box; padding: 0 10px; min-height: 40px; border-radius: 12px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); color: var(--accent); }
 .slider-control > .i, .slider-control > .width-box { flex: none; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
 .slider-control[hidden] { display: none; }

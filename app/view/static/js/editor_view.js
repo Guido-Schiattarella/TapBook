@@ -17,7 +17,7 @@
 // to EditorView (at the end of this file); shared.js holds shared constants and functions.
 import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { apiGetBinary, apiPost } from './api.js';
-import { PDF_OPTIONS, COLORS, ERASER_DEFAULT, ERASER_PREF, WIDTH_DEFAULT, WIDTH_MIN, WIDTH_MAX, WIDTH_PREF,
+import { PDF_OPTIONS, COLORS, ERASER_DEFAULT, ERASER_PREF,
   TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_PREF } from './editor/shared.js';
 import { SyncMethods } from './editor/sync.js';
 import { InputMethods } from './editor/input.js';
@@ -28,6 +28,7 @@ import { ZoomMethods } from './editor/zoom.js';
 import { ToolbarMethods } from './editor/toolbar.js';
 import { RenderMethods } from './editor/render.js';
 import { TextsMethods } from './editor/texts.js';
+import { WidthMethods } from './editor/widths.js';
 
 export class EditorView {
   constructor(app) {
@@ -58,7 +59,7 @@ export class EditorView {
     // the user's choices (presentation)
     this.tool = 'pen';
     this.color = COLORS[0];
-    this.width = this.storedNumber(WIDTH_PREF, WIDTH_DEFAULT, WIDTH_MIN, WIDTH_MAX);
+    this.loadWidths();                                    // thickness of each tool (widths.js)
     this.textSize = this.storedNumber(TEXT_SIZE_PREF, TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
     this.fingerDraw = false;
     this.zoom = 1;
@@ -201,7 +202,7 @@ export class EditorView {
 }
 
 // Methods of the individual areas, added to the class as they are.
-for (const area of [SyncMethods, InputMethods, PagesMethods, SelectionMethods, ImagesMethods, ZoomMethods, ToolbarMethods, RenderMethods, TextsMethods]) {
+for (const area of [SyncMethods, InputMethods, PagesMethods, SelectionMethods, ImagesMethods, ZoomMethods, ToolbarMethods, RenderMethods, TextsMethods, WidthMethods]) {
   for (const name of Object.getOwnPropertyNames(area.prototype)) {
     if (name !== 'constructor') {
       Object.defineProperty(EditorView.prototype, name, Object.getOwnPropertyDescriptor(area.prototype, name));

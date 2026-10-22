@@ -1,6 +1,18 @@
 // Small wrapper around the server API calls.
 // The X-Requested-With header is required by the server for every request that
 // changes data (CSRF protection).
+// The computer cannot be reached (Wi-Fi, server off): the only case in which a
+// request is worth sending again. Any other error is not retried.
+export class NetworkError extends Error {}
+
+async function send(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch {
+    throw new NetworkError('Rete non raggiungibile');
+  }
+}
+
 export class ApiError extends Error {
   // data: the JSON body of the response (e.g. data.reason for a closed session)
   constructor(message, status, data = null) { super(message); this.status = status; this.data = data || {}; }
@@ -19,12 +31,12 @@ async function handle(resp) {
 
 export async function apiGet(url, params = {}) {
   const qs = new URLSearchParams(params).toString();
-  return handle(await fetch(qs ? `${url}?${qs}` : url, { credentials: 'same-origin' }));
+  return handle(await send(qs ? `${url}?${qs}` : url, { credentials: 'same-origin' }));
 }
 
 export async function apiPost(url, body) {
   const isForm = body instanceof FormData;
-  return handle(await fetch(url, {
+  return handle(await send(url, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'X-Requested-With': 'notes-app', ...(isForm ? {} : { 'Content-Type': 'application/json' }) },
@@ -53,7 +65,7 @@ export function apiPostProgress(url, body, { onUpload, onWaiting, onDownload } =
     if (onUpload) xhr.upload.onprogress = (e) => onUpload(e.loaded, e.lengthComputable ? e.total : 0);
     if (onWaiting) xhr.upload.onload = () => onWaiting();
     if (onDownload) xhr.onprogress = (e) => onDownload(e.loaded, e.lengthComputable ? e.total : 0);
-    xhr.onerror = () => reject(new TypeError('Rete non raggiungibile'));
+    xhr.onerror = () => reject(new NetworkError('Rete non raggiungibile'));
     xhr.onload = () => {
       if (xhr.status === 401) {
         location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
@@ -81,7 +93,7 @@ export function apiGetBinary(url, params = {}, onProgress = null) {
     xhr.withCredentials = true;
     xhr.responseType = 'arraybuffer';
     if (onProgress) xhr.onprogress = (e) => onProgress(e.loaded, e.lengthComputable ? e.total : 0);
-    xhr.onerror = () => reject(new TypeError('Rete non raggiungibile'));
+    xhr.onerror = () => reject(new NetworkError('Rete non raggiungibile'));
     xhr.onload = () => {
       if (xhr.status === 401) {
         location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);

@@ -149,12 +149,20 @@
         <button id="btn-photo" class="tool" title="Aggiungi una foto (fotocamera o libreria)"><svg class="i"><use href="#i-camera"></use></svg></button>
       </div>
       <input id="image-input" type="file" accept="image/*" hidden>
+      {# Options of the chosen tool, in a block of fixed width: changing tool never moves the toolbar. #}
+      <div class="tool-options">
       <span id="colors" class="colors"></span>
       <label id="width-control" class="slider-control" title="Spessore del tratto">
         <span class="width-box"><i id="width-preview" class="width-preview"></i></span>
         <input type="range" id="width" min="0" max="100" step="1" aria-label="Spessore del tratto">
         <span id="width-value" class="slider-value"></span>
       </label>
+      <div id="width-presets" class="segment" role="radiogroup" aria-label="Spessore predefinito">
+        <button class="tool size" data-width="small" role="radio" title="Spessore piccolo"><i class="size-dot filled" style="--d:5px"></i></button>
+        <button class="tool size" data-width="medium" role="radio" title="Spessore medio"><i class="size-dot filled" style="--d:9px"></i></button>
+        <button class="tool size" data-width="large" role="radio" title="Spessore grande"><i class="size-dot filled" style="--d:14px"></i></button>
+        <button class="tool size custom" data-width="custom" role="radio" title="Spessore scelto con lo slider (uno per ogni strumento)">Personalizzato</button>
+      </div>
       <label id="text-size-control" class="slider-control" title="Dimensione del testo" hidden>
         <svg class="i"><use href="#i-text"></use></svg>
         <input type="range" id="text-size" min="6" max="72" step="1" aria-label="Dimensione del testo">
@@ -164,6 +172,7 @@
         <button class="tool size" data-radius="3" title="Gomma fine: cancella solo il tratto che tocchi"><i class="size-dot" style="--d:6px"></i></button>
         <button class="tool size" data-radius="7" title="Gomma media"><i class="size-dot" style="--d:11px"></i></button>
         <button class="tool size" data-radius="14" title="Gomma grande"><i class="size-dot" style="--d:18px"></i></button>
+      </div>
       </div>
     </div>
     <div class="group">

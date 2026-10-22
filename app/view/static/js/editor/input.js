@@ -2,7 +2,7 @@
 // EditorView methods (see editor_view.js): here `this` is the editor.
 import { apiPost, reportError } from '../api.js';
 import { COLORS, HIGHLIGHTER_FACTOR, MIN_POINT_DIST, STABILIZER, HOLD_MS, HOLD_MOVE_PX, SNAP_PX, SHAPE_MAX_POINTS, GESTURE_POINT_DIST, GESTURE_MAX_POINTS, uid, ERASER_PREF, touches, isStylus,
-  WIDTH_PREF, widthFromSlider, sliderFromWidth, TEXT_SIZE_PREF, TOOL_KEYS, PREDICT_MS, PREDICT_MAX_PX, STAB_FULL_PX, STAB_NONE_PX } from './shared.js';
+  widthFromSlider, TEXT_SIZE_PREF, TOOL_KEYS, PREDICT_MS, PREDICT_MAX_PX, STAB_FULL_PX, STAB_NONE_PX } from './shared.js';
 
 export class InputMethods {
   // =====================================================================
@@ -24,13 +24,12 @@ export class InputMethods {
       });
       this.colorsEl.append(b);
     });
-    // Stroke thickness: slider from very thin to very thick, remembered on this iPad.
+    // Stroke thickness: standard sizes, or the slider (custom, for each tool).
     const widthInput = document.getElementById('width');
-    widthInput.value = sliderFromWidth(this.width);
-    widthInput.addEventListener('input', () => { this.width = widthFromSlider(Number(widthInput.value)); this.showWidth(); });
-    widthInput.addEventListener('change', () => {
-      try { localStorage.setItem(WIDTH_PREF, String(this.width)); } catch { /* no storage available */ }
-    });
+    widthInput.addEventListener('input', () => this.setCustomWidth(widthFromSlider(Number(widthInput.value)), false));
+    widthInput.addEventListener('change', () => this.setCustomWidth(widthFromSlider(Number(widthInput.value)), true));
+    document.querySelectorAll('#width-presets [data-width]').forEach((b) =>
+      b.addEventListener('click', () => this.chooseWidth(b.dataset.width)));
     // Font size: of the active text box, and of the next ones created.
     const sizeInput = document.getElementById('text-size');
     sizeInput.addEventListener('input', () => {
@@ -119,6 +118,8 @@ export class InputMethods {
     this.pagesEl.addEventListener('pointermove', safe(this.pointerMove));
     this.pagesEl.addEventListener('pointerup', safe(this.pointerUp));
     this.pagesEl.addEventListener('pointercancel', safe(this.pointerUp));
+    // The pen side button is a "right click": no browser menu over the pages.
+    this.pagesEl.addEventListener('contextmenu', (e) => e.preventDefault());
     // Safari can lose the pointer capture without sending "pointerup": the stroke
     // ends there instead of staying open.
     this.pagesEl.addEventListener('lostpointercapture', safe((e) => {
@@ -168,21 +169,31 @@ export class InputMethods {
   }
 
   pointerDown(e) {
+    // Side button of the pens that have one: eraser, and pressed again back to the
+    // previous tool. For the browser it is a "right click" of the pen.
+    if (e.pointerType === 'pen' && (e.button === 2 || (e.buttons & 2))) {
+      e.preventDefault();
+      if (!this.gesture) this.togglePenEraser();
+      return;
+    }
+    // Eraser end of the pens that have one: it erases while it touches, then the
+    // tool in use stays the same.
+    const tool = e.pointerType === 'pen' && (e.button === 5 || (e.buttons & 32)) ? 'eraser' : this.tool;
     const pageEl = e.target.closest('.page');
     if (!pageEl || this.gesture || this.blocked || e.target.closest('.textbox, .imagebox, .selection')) return;
-    if (['text', 'image'].includes(this.tool) || !this.acceptsPointer(e)) return;
+    if (['text', 'image'].includes(tool) || !this.acceptsPointer(e)) return;
     const page = this.page(pageEl.dataset.id);
     if (!page) return;
     e.preventDefault();
     try { pageEl.setPointerCapture(e.pointerId); } catch { /* the stroke goes on anyway */ }
     const rect = pageEl.getBoundingClientRect();
     const pt = this.pagePoint(page, e, rect);
-    if (this.tool === 'eraser') {
+    if (tool === 'eraser') {
       this.gesture = { type: 'erase', page, rect, pointerId: e.pointerId, pointerType: e.pointerType,
         ids: new Set(), newIds: new Set(), path: [], radius: this.eraserRadius };
       this.showEraserCursor(page, pt);
       this.eraseAt(pt);
-    } else if (this.tool === 'lasso') {
+    } else if (tool === 'lasso') {
       this.clearSelection();
       this.gesture = { type: 'lasso', page, rect, pointerId: e.pointerId, pointerType: e.pointerType, points: [pt] };
     } else {
@@ -249,6 +260,17 @@ export class InputMethods {
       g.tip = this.predictTip(g, samples[samples.length - 1]);
     }
     this.drawLive(g);
+  }
+
+  // Pen side button: to the eraser, and back to the tool used before.
+  togglePenEraser() {
+    if (this.tool === 'eraser') {
+      this.selectTool(this.toolBeforeEraser || 'pen');
+      this.toolBeforeEraser = null;
+    } else {
+      this.toolBeforeEraser = this.tool;
+      this.selectTool('eraser');
+    }
   }
 
   // Tip a little ahead of the last sample, following the (smoothed) speed.

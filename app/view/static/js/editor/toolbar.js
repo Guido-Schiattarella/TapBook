@@ -62,19 +62,13 @@ export class ToolbarMethods {
     const eraser = this.tool === 'eraser', text = this.tool === 'text';
     this.colorsEl.hidden = eraser;
     document.getElementById('width-control').hidden = eraser || text;
+    document.getElementById('width-presets').hidden = eraser || text;
+    if (!eraser && !text) this.showWidth();      // each tool has its own thickness
     document.getElementById('text-size-control').hidden = !text;
     document.getElementById('eraser-sizes').hidden = !eraser;
     document.querySelectorAll('#eraser-sizes .size').forEach((b) =>
       b.classList.toggle('active', Number(b.dataset.radius) === this.eraserRadius));
     if (!eraser) this.hideEraserCursor();
-  }
-
-  // Thickness next to the slider: value in points and a dot as thick as the stroke.
-  showWidth() {
-    const w = this.width;
-    document.getElementById('width-value').textContent = (w < 1 ? w.toFixed(2) : w.toFixed(1)).replace('.', ',');
-    const d = Math.max(1, Math.min(22, w * this.scale));
-    Object.assign(document.getElementById('width-preview').style, { width: d + 'px', height: d + 'px' });
   }
 
   // Font size shown in the toolbar: of the active box, or of the next new one.

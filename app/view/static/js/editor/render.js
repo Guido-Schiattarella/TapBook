@@ -236,7 +236,10 @@ export class RenderMethods {
     if (!v.tail) {
       v.tail = document.createElement('canvas');
       v.tail.className = 'live tail';
-      v.tailCtx = v.tail.getContext('2d', { desynchronized: true });   // lower latency where supported
+      // A normal canvas, not a "low latency" one (desynchronized): Chrome and the
+      // browsers based on it can show that on a separate plane of the graphics
+      // card, which ignores the opacity and may keep showing an old drawing.
+      v.tailCtx = v.tail.getContext('2d');
       v.el.append(v.tail);
     }
     v.tail.width = v.tail.height = Math.round(TAIL_BOX * dpr);
@@ -246,10 +249,11 @@ export class RenderMethods {
       if (!v.live) {
         v.live = document.createElement('canvas');
         v.live.className = 'live';
-        v.liveCtx = v.live.getContext('2d', { desynchronized: true });
+        v.liveCtx = v.live.getContext('2d');
         v.ink.after(v.live);
       }
       this.placeCanvas(v.live, v.region);
+      v.live.style.opacity = String(HIGHLIGHT_ALPHA);   // drawn opaque, made transparent here
       this.liveStyle(v.liveCtx, v, g.stroke);
     }
     v.tail.style.opacity = highlighter ? String(HIGHLIGHT_ALPHA) : '';
