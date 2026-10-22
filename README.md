@@ -187,7 +187,9 @@ You can also add, copy or back up PDFs there directly from the computer.
 
 **Shared documents and conflicts**
 - When the same document is open on several devices, the server merges their
-  changes and sends each device the changes of the others.
+  changes and sends each device the changes of the others. If a device changes
+  something that another one has just deleted (for example it moves an image
+  removed a moment earlier), the change is simply dropped: no error.
 - If a PDF is changed on the computer while it is open on the iPad, TapBook
   notices it. One version wins and the other is kept in the trash, so nothing is
   overwritten silently.

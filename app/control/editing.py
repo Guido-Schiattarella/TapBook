@@ -30,7 +30,7 @@ from ..model import layouts, pdf_store, save_worker
 from ..model.document import OpenDocument, PageStructureChanged, new_id
 from ..model.pictures import InvalidPicture, prepare_picture
 from . import geometry, shapes
-from .errors import ControlError, InvalidInput
+from .errors import ControlError, InvalidInput, NotFound
 
 AUTOSAVE_DELAY = 1.0          # seconds of inactivity before saving
 RETRY_DELAY = 3.0             # retry after a write error
@@ -310,8 +310,12 @@ class EditController:
             room.doc.subscribe(mine.append)       # the model notifies the controller
             try:
                 private = action() or []
-            except LookupError as e:
-                raise InvalidInput(str(e))
+            except LookupError:
+                # The operation refers to a page or a note that another device (or the
+                # computer) has just removed, before this device knew it: in a document
+                # used together it is normal, not an error. Nothing more is done, and
+                # the reply brings this device the news (the removal included).
+                private = []
             finally:
                 room.doc.unsubscribe(mine.append)
             client.last_used = time.time()
@@ -334,8 +338,9 @@ class EditController:
         with room.lock:
             try:
                 page = room.doc.page(_id(page_id))
-            except LookupError as e:
-                raise InvalidInput(str(e))
+            except LookupError:
+                # Page just removed by another device: nothing to add it to (see _run).
+                return self._reply(client, [])
             if len(page.get("images", [])) >= MAX_IMAGES_PER_PAGE:
                 raise InvalidInput("Troppe immagini in questa pagina")
             image_id = new_id()
@@ -364,7 +369,7 @@ class EditController:
             try:
                 return client.room.doc.picture_path(_id(image_id))
             except LookupError:
-                raise InvalidInput("Immagine non trovata")
+                raise NotFound("Immagine non trovata")     # e.g. just removed by another device
 
     def layout_page(self, username: str, client_id: str, page_id) -> bytes:
         """Background of a page added in this session and not yet in the original
@@ -374,7 +379,7 @@ class EditController:
             try:
                 page = client.room.doc.page(_id(page_id))
             except LookupError as e:
-                raise InvalidInput(str(e))
+                raise NotFound(str(e))                        # e.g. just removed by another device
             layout, w, h = page.get("layout") or layouts.DEFAULT, page["w"], page["h"]
         return layouts.page_pdf(layout, w, h)
 
