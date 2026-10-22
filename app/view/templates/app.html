@@ -139,22 +139,27 @@
     </div>
     <div class="group tools" role="toolbar" aria-label="Strumenti">
       <div class="segment">
-        <button data-tool="pen" class="tool active" title="Penna"><svg class="i"><use href="#i-pen"></use></svg></button>
-        <button data-tool="highlighter" class="tool" title="Evidenziatore"><svg class="i"><use href="#i-highlighter"></use></svg></button>
-        <button data-tool="eraser" class="tool" title="Gomma"><svg class="i"><use href="#i-eraser"></use></svg></button>
-        <button data-tool="shape" class="tool" title="Forme: disegna e al rilascio diventa linea, curva, cerchio, ellisse, triangolo, quadrato o rettangolo. Con la penna normale: tieni ferma la Pencil a fine tratto"><svg class="i"><use href="#i-shapes"></use></svg></button>
-        <button data-tool="lasso" class="tool" title="Lazzo: cerchia tratti, testi e immagini per spostarli, ricolorarli, duplicarli o eliminarli"><svg class="i"><use href="#i-lasso"></use></svg></button>
-        <button data-tool="text" class="tool" title="Testo"><svg class="i"><use href="#i-text"></use></svg></button>
+        <button data-tool="pen" class="tool active" title="Penna (P)"><svg class="i"><use href="#i-pen"></use></svg></button>
+        <button data-tool="highlighter" class="tool" title="Evidenziatore (H)"><svg class="i"><use href="#i-highlighter"></use></svg></button>
+        <button data-tool="eraser" class="tool" title="Gomma (E)"><svg class="i"><use href="#i-eraser"></use></svg></button>
+        <button data-tool="shape" class="tool" title="Forme (F): disegna e al rilascio diventa linea, curva, cerchio, ellisse, triangolo, quadrato o rettangolo. Con la penna normale: tieni ferma la Pencil a fine tratto"><svg class="i"><use href="#i-shapes"></use></svg></button>
+        <button data-tool="lasso" class="tool" title="Lazzo (L): cerchia tratti, testi e immagini per spostarli, ricolorarli, duplicarli o eliminarli"><svg class="i"><use href="#i-lasso"></use></svg></button>
+        <button data-tool="text" class="tool" title="Testo (T): tocca la pagina per una nuova casella, tocca un testo per modificarlo; Esc per uscire"><svg class="i"><use href="#i-text"></use></svg></button>
         <button data-tool="image" class="tool" title="Immagini: tocca la pagina per aggiungerne una, trascina per spostare"><svg class="i"><use href="#i-image"></use></svg></button>
         <button id="btn-photo" class="tool" title="Aggiungi una foto (fotocamera o libreria)"><svg class="i"><use href="#i-camera"></use></svg></button>
       </div>
       <input id="image-input" type="file" accept="image/*" hidden>
       <span id="colors" class="colors"></span>
-      <select id="width" title="Spessore">
-        <option value="1">Fine</option>
-        <option value="2" selected>Medio</option>
-        <option value="4">Spesso</option>
-      </select>
+      <label id="width-control" class="slider-control" title="Spessore del tratto">
+        <span class="width-box"><i id="width-preview" class="width-preview"></i></span>
+        <input type="range" id="width" min="0" max="100" step="1" aria-label="Spessore del tratto">
+        <span id="width-value" class="slider-value"></span>
+      </label>
+      <label id="text-size-control" class="slider-control" title="Dimensione del testo" hidden>
+        <svg class="i"><use href="#i-text"></use></svg>
+        <input type="range" id="text-size" min="6" max="72" step="1" aria-label="Dimensione del testo">
+        <span id="text-size-value" class="slider-value"></span>
+      </label>
       <div id="eraser-sizes" class="segment" role="radiogroup" aria-label="Grandezza della gomma" hidden>
         <button class="tool size" data-radius="3" title="Gomma fine: cancella solo il tratto che tocchi"><i class="size-dot" style="--d:6px"></i></button>
         <button class="tool size" data-radius="7" title="Gomma media"><i class="size-dot" style="--d:11px"></i></button>

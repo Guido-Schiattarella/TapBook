@@ -343,9 +343,6 @@ mark { background: #fff0a8; color: inherit; border-radius: 4px; padding: 0 2px; 
 .toolbar .tool:hover:not(:disabled) { background: #fff; color: var(--accent); }
 .toolbar .tool.active { background: linear-gradient(135deg, var(--side-from), var(--side-to)); color: #fff; box-shadow: 0 4px 10px rgba(47, 108, 246, .3); }
 .toolbar .tool.labeled { gap: 6px; padding: 0 10px; font-size: 14px; }
-.toolbar select {
-  min-height: 38px; padding: 0 10px; border-radius: 10px; background: var(--surface-2); border-color: var(--border); font-size: 14px;
-}
 .colors { display: inline-flex; gap: 6px; }
 .colors button { width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; border-radius: 50%; border: 0;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .12); }
@@ -401,21 +398,37 @@ mark { background: #fff0a8; color: inherit; border-radius: 4px; padding: 0 2px; 
 .page .texts { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
 .pages.tool-text .page { cursor: text; }
 .pages.tool-text .texts { pointer-events: auto; }
-.pages.tool-text .textbox { outline: 1px dashed var(--accent-2); }
+.pages.tool-text .textbox.active { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
 .textbox { position: absolute; }
 .textbox textarea {
   display: block; width: 100%; height: 100%; border: 0; padding: 0; margin: 0; resize: none;
   background: transparent; overflow: hidden; font-family: Helvetica, Arial, sans-serif;
   line-height: 1.2; outline: none; pointer-events: none;
 }
-.pages.tool-text .textbox textarea { pointer-events: auto; background: rgba(255, 255, 255, .6); }
+.pages.tool-text .textbox textarea { pointer-events: auto; cursor: text; }
+.pages.tool-text .textbox.active textarea { background: rgba(255, 255, 255, .6); }
 .textbox .handle, .textbox .remove {
   display: none; position: absolute; top: -30px; height: 26px; min-height: 26px; padding: 0 10px;
   font-size: 12px; border-radius: 8px; border: 0; box-shadow: var(--shadow);
 }
 .textbox .handle { left: 0; cursor: move; touch-action: none; color: var(--accent); }
 .textbox .remove { right: 0; color: var(--danger); }
-.pages.tool-text .textbox .handle, .pages.tool-text .textbox .remove { display: inline-flex; }
+.textbox .resize {
+  display: none; position: absolute; right: -12px; bottom: -12px; width: 22px; height: 22px; min-height: 22px; padding: 0;
+  border-radius: 50%; background: var(--accent); border: 3px solid #fff; cursor: nwse-resize; touch-action: none; box-shadow: var(--shadow);
+}
+.pages.tool-text .textbox.active .handle, .pages.tool-text .textbox.active .remove { display: inline-flex; }
+.pages.tool-text .textbox.active .resize { display: block; }
+
+/* Thickness and font size sliders */
+/* Both controls have the same width: switching tool never moves the toolbar (or the pages). */
+.slider-control { display: inline-flex; align-items: center; gap: 6px; width: 204px; box-sizing: border-box; padding: 0 10px; min-height: 40px; border-radius: 12px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); color: var(--accent); }
+.slider-control > .i, .slider-control > .width-box { flex: none; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+.slider-control[hidden] { display: none; }
+.slider-control input[type=range] { flex: 1; min-width: 0; width: 100%; accent-color: var(--accent); touch-action: pan-x; }
+.slider-value { flex: none; width: 42px; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text-2); text-align: right; }
+.width-preview { display: inline-block; flex: none; border-radius: 50%; background: currentColor; }
+.page canvas.live { z-index: 1; pointer-events: none; }
 
 /* Lasso */
 .pages.tool-lasso .page { cursor: crosshair; }

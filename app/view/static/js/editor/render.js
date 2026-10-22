@@ -146,7 +146,8 @@ export class RenderMethods {
     return [...this.pendingStrokes.values()].filter((p) => p.page === page.id).map((p) => p.stroke);
   }
 
-  // Redraws the page's strokes: confirmed + pending + the one in progress.
+  // Redraws the page's strokes: confirmed + pending (the one in progress is on
+  // its own layer, see drawLive).
   drawInk(page) {
     const v = this.els.get(page.id);
     if (!v?.rendered || !v.region) return;
@@ -167,7 +168,6 @@ export class RenderMethods {
       }
     }
     const g = this.gesture;
-    if (g?.type === 'draw' && g.page.id === page.id) this.drawStroke(ctx, g.stroke);
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
     if (g?.type === 'lasso' && g.page.id === page.id) {
@@ -183,26 +183,41 @@ export class RenderMethods {
     }
   }
 
-  // Preview of the stroke while the pen moves (immediately, without waiting for the computer).
-  drawLive(page, stroke, from) {
+  // Preview of the stroke while the pen moves (immediately, without waiting for
+  // the computer). It lives on its own canvas above the strokes, redrawn whole at
+  // every movement: the curve can run right up to the tip of the Pencil (the
+  // last piece, not yet a final point, is redrawn as the pen moves on), and the
+  // highlighter does not need the whole page to be redrawn.
+  startLive(page) {
     const v = this.els.get(page.id);
     if (!v?.rendered || !v.region) return;
-    if (stroke.tool === 'highlighter') { this.drawInk(page); return; }  // semi-transparent: redraw everything
-    const ctx = this.inkContext(v);
-    if (from === 0) { this.drawStroke(ctx, { ...stroke, points: [stroke.points[0]] }); from = 1; }
-    this.strokeStyle(ctx, stroke);
-    const pts = stroke.points;
-    const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-    // Same curve as the final drawing, one piece at a time: point j arriving
-    // completes the curve through point j-1 (the last half segment is drawn
-    // when the pen is lifted).
-    for (let j = Math.max(2, from); j < pts.length; j++) {
-      const start = j === 2 ? pts[0] : mid(pts[j - 2], pts[j - 1]);
-      const end = mid(pts[j - 1], pts[j]);
-      ctx.beginPath();
-      ctx.moveTo(start[0], start[1]);
-      ctx.quadraticCurveTo(pts[j - 1][0], pts[j - 1][1], end[0], end[1]);
-      ctx.stroke();
+    if (!v.live) {
+      v.live = document.createElement('canvas');
+      v.live.className = 'live';
+      v.liveCtx = v.live.getContext('2d', { desynchronized: true });  // lower latency where supported
+      v.ink.after(v.live);
     }
+    this.placeCanvas(v.live, v.region);
+  }
+
+  drawLive(g) {
+    const v = this.els.get(g.page.id);
+    if (!v?.live || !v.region) return;
+    const ctx = v.liveCtx;
+    const { x, y, r } = v.region;
+    const k = this.scale * r;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, v.live.width, v.live.height);
+    ctx.setTransform(k, 0, 0, k, -x * r, -y * r);
+    const s = g.stroke;
+    const tip = g.tip;
+    const last = s.points[s.points.length - 1];
+    const reach = !s.shape && tip && (tip[0] !== last[0] || tip[1] !== last[1]);
+    this.drawStroke(ctx, reach ? { ...s, points: [...s.points, tip] } : s);
+  }
+
+  endLive(page) {
+    const v = this.els.get(page.id);
+    if (v?.live) v.live.width = v.live.height = 0;
   }
 }

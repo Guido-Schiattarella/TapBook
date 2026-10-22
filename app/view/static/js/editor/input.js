@@ -1,18 +1,15 @@
 // VIEW — editor, input from Apple Pencil, finger and mouse; strokes, geometric shapes (press and hold), eraser.
 // EditorView methods (see editor_view.js): here `this` is the editor.
 import { apiPost } from '../api.js';
-import { COLORS, HIGHLIGHTER_FACTOR, MIN_POINT_DIST, STABILIZER, HOLD_MS, HOLD_MOVE_PX, SNAP_PX, SHAPE_MAX_POINTS, GESTURE_POINT_DIST, GESTURE_MAX_POINTS, uid, ERASER_PREF, touches, isStylus } from './shared.js';
+import { COLORS, HIGHLIGHTER_FACTOR, MIN_POINT_DIST, STABILIZER, HOLD_MS, HOLD_MOVE_PX, SNAP_PX, SHAPE_MAX_POINTS, GESTURE_POINT_DIST, GESTURE_MAX_POINTS, uid, ERASER_PREF, touches, isStylus,
+  WIDTH_PREF, widthFromSlider, sliderFromWidth, TEXT_SIZE_PREF, TOOL_KEYS } from './shared.js';
 
 export class InputMethods {
   // =====================================================================
   // Input: Pencil, mouse, finger, buttons, keyboard
   // =====================================================================
   bindInput() {
-    document.querySelectorAll('.tool[data-tool]').forEach((b) => b.addEventListener('click', () => {
-      this.tool = b.dataset.tool;
-      if (this.tool !== 'lasso') this.clearSelection();
-      this.showTool();
-    }));
+    document.querySelectorAll('.tool[data-tool]').forEach((b) => b.addEventListener('click', () => this.selectTool(b.dataset.tool)));
     COLORS.forEach((color) => {
       const b = document.createElement('button');
       b.style.background = color;
@@ -21,12 +18,33 @@ export class InputMethods {
       b.addEventListener('click', () => {
         this.color = color;
         this.showColor();
-        // With items selected, the chosen colour applies to them.
+        // With items selected (or a text box active), the chosen colour applies to them.
         if (this.hasSelection()) this.send({ type: 'recolorSelection', ...this.selectionPayload(), color });
+        if (this.activeText) this.styleActiveText({ color });
       });
       this.colorsEl.append(b);
     });
-    document.getElementById('width').addEventListener('change', (e) => { this.width = Number(e.target.value); });
+    // Stroke thickness: slider from very thin to very thick, remembered on this iPad.
+    const widthInput = document.getElementById('width');
+    widthInput.value = sliderFromWidth(this.width);
+    widthInput.addEventListener('input', () => { this.width = widthFromSlider(Number(widthInput.value)); this.showWidth(); });
+    widthInput.addEventListener('change', () => {
+      try { localStorage.setItem(WIDTH_PREF, String(this.width)); } catch { /* no storage available */ }
+    });
+    // Font size: of the active text box, and of the next ones created.
+    const sizeInput = document.getElementById('text-size');
+    sizeInput.addEventListener('input', () => {
+      const size = Number(sizeInput.value);
+      this.showTextSize(size);
+      if (this.activeText) this.styleActiveText({ size }, false);
+      else this.textSize = size;
+    });
+    sizeInput.addEventListener('change', () => {
+      const size = Number(sizeInput.value);
+      if (this.activeText) this.styleActiveText({ size });
+      this.textSize = size;
+      try { localStorage.setItem(TEXT_SIZE_PREF, String(size)); } catch { /* no storage available */ }
+    });
     document.querySelectorAll('#eraser-sizes .size').forEach((b) => b.addEventListener('click', () => {
       this.eraserRadius = Number(b.dataset.radius);
       try { localStorage.setItem(ERASER_PREF, String(this.eraserRadius)); } catch { /* no storage available */ }
@@ -55,7 +73,16 @@ export class InputMethods {
     });
 
     document.addEventListener('keydown', (e) => {
-      if (!this.session || e.target.tagName === 'TEXTAREA') return;
+      if (!this.session || this.element.hidden || document.querySelector('dialog[open]')) return;
+      // Esc leaves the text box (and the lasso selection): then the letters choose the tools.
+      if (e.key === 'Escape') {
+        if (this.activeText || this.hasSelection()) e.preventDefault();
+        this.deactivateText();
+        this.clearSelection();
+        return;
+      }
+      const t = e.target;
+      if (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
       if ((key === 'delete' || key === 'backspace') && this.hasSelection()) {
@@ -63,6 +90,7 @@ export class InputMethods {
         this.removeSelection();
       } else if (mod && key === 'z') { e.preventDefault(); this.send({ type: e.shiftKey ? 'redo' : 'undo' }); }
       else if (mod && key === 'y') { e.preventDefault(); this.send({ type: 'redo' }); }
+      else if (!mod && !e.altKey && TOOL_KEYS[key]) { e.preventDefault(); this.selectTool(TOOL_KEYS[key]); }
     });
 
     // Touches: two fingers = pinch zoom; Pencil (and finger with "Dito" on)
@@ -149,9 +177,10 @@ export class InputMethods {
       const stroke = { id: uid(), tool, color: this.color,
         width: tool === 'highlighter' ? this.width * HIGHLIGHTER_FACTOR : this.width, points: [pt] };
       this.gesture = { type: 'draw', page, pointerId: e.pointerId, pointerType: e.pointerType, stroke,
-        filtered: pt, lastRaw: pt, shapeTool: this.tool === 'shape', hold: { x: e.clientX, y: e.clientY } };
+        filtered: pt, lastRaw: pt, tip: pt, shapeTool: this.tool === 'shape', hold: { x: e.clientX, y: e.clientY } };
       if (!this.gesture.shapeTool) this.armHold(this.gesture);
-      this.drawLive(page, stroke, 0);
+      this.startLive(page);
+      this.drawLive(this.gesture);
     }
   }
 
@@ -183,7 +212,6 @@ export class InputMethods {
       if (!g.shapeTool) this.armHold(g);
     }
     const pts = g.stroke.points;
-    const from = pts.length;
     for (const raw of points) {
       g.lastRaw = raw;
       const f = g.filtered;
@@ -193,7 +221,11 @@ export class InputMethods {
         pts.push(g.filtered.map((n) => Math.round(n * 100) / 100));
       }
     }
-    if (pts.length > from) this.drawLive(g.page, g.stroke, from);
+    // The preview reaches the tip: the last real point or, where the browser
+    // provides it, the point where the Pencil is about to be.
+    const predicted = e.getPredictedEvents ? e.getPredictedEvents() : [];
+    g.tip = predicted.length ? this.pagePoint(g.page, predicted[predicted.length - 1]) : g.lastRaw;
+    this.drawLive(g);
   }
 
   pointerUp(e) {
@@ -209,6 +241,7 @@ export class InputMethods {
       // then the page is redrawn with the last piece: this way the stroke never disappears.
       this.pendingStrokes.set(g.stroke.id, { page: g.page.id, stroke: g.stroke });
       this.drawInk(g.page);
+      this.endLive(g.page);
       this.finishStroke(g);
     } else if (g.type === 'lasso') {
       this.drawInk(g.page);  // removes the dashed outline
@@ -236,7 +269,9 @@ export class InputMethods {
       const request = g.holdRequest = this.recognize(g);
       const shape = await request;
       // Valid only if the pen has not moved in the meantime (holdRequest unchanged).
-      if (g.holdRequest === request && this.applyShape(g, shape)) this.drawInk(g.page);
+      if (g.holdRequest === request && this.applyShape(g, shape)) {
+        if (this.gesture === g) this.drawLive(g); else this.drawInk(g.page);
+      }
     }, HOLD_MS);
   }
 
@@ -313,6 +348,7 @@ export class InputMethods {
     this.gesture = null;
     clearTimeout(g.holdTimer);
     if (g.type === 'erase') g.ids.forEach((id) => this.hiddenStrokes.delete(id));
+    if (g.type === 'draw') this.endLive(g.page);
     this.hideEraserCursor();
     this.drawInk(g.page);
   }
@@ -342,10 +378,21 @@ export class InputMethods {
     const pageEl = e.target.closest('.page');
     const page = pageEl && this.page(pageEl.dataset.id);
     if (!page) return;
-    if (document.activeElement?.tagName === 'TEXTAREA') { document.activeElement.blur(); return; }
+    // A tap outside the active box leaves it (it does not create a new one).
+    if (this.activeText || document.activeElement?.tagName === 'TEXTAREA') {
+      this.deactivateText();
+      document.activeElement?.blur?.();
+      return;
+    }
     const [x, y] = this.pagePoint(page, e);
     if (this.tool === 'image') { this.pickImage({ page: page.id, x, y }); return; }
     this.focusNewText = true;  // the box created by the controller will receive the cursor
-    this.send({ type: 'addText', page: page.id, x, y, color: this.color });
+    this.send({ type: 'addText', page: page.id, x, y, color: this.color, size: this.textSize });
+  }
+
+  selectTool(tool) {
+    this.tool = tool;
+    if (tool !== 'lasso') this.clearSelection();
+    this.showTool();
   }
 }

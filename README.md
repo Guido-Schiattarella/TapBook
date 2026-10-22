@@ -32,8 +32,9 @@ ordinary PDF files in a folder on your computer.
 ## Features
 
 **Writing**
-- Pen (6 colours, 3 thicknesses), highlighter that does not cover the text,
-  eraser in three sizes.
+- Pen and highlighter in 6 colours, with a thickness slider from very thin
+  (0.2 pt) to very thick (16 pt); eraser in three sizes. The stroke follows the
+  Pencil tip closely, with only light smoothing.
 - Full Apple Pencil support with palm rejection: the Pencil writes and the finger
   scrolls. All the Pencil's high-frequency samples are used, so strokes are smooth.
 - Shape recognition: draw a line, circle, ellipse, triangle, square or rectangle
@@ -41,8 +42,13 @@ ordinary PDF files in a folder on your computer.
   to do the same without switching tools.
 - Lasso: select strokes, text boxes and images, then move, recolour, duplicate or
   delete them.
-- Text boxes typed from the keyboard, and photos from the iPad camera or library.
-  Photos can be moved, resized and deleted, even after the document is reopened.
+- Text boxes typed from the keyboard, with adjustable font size. Tap a box in
+  text mode to edit it again; the box can be moved, resized and deleted.
+- Photos from the iPad camera or library. Photos can be moved, resized and
+  deleted, even after the document is reopened.
+- Keyboard shortcuts (with a keyboard connected to the iPad): **P** pen,
+  **H** highlighter, **E** eraser, **L** lasso, **F** shapes, **T** text,
+  **Esc** to leave a text box, **Cmd+Z** / **Cmd+Shift+Z** to undo and redo.
 - Undo and redo for the whole session.
 - Pinch to zoom from 0.5× to 10×, without redrawing the pages from scratch.
 

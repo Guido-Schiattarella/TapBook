@@ -14,8 +14,9 @@ __pycache__/
 dist/
 
 # --- Local machine files ---------------------------------------------------------
-# PyCharm settings.
+# PyCharm settings and local Claude Code settings.
 .idea/
+.claude/
 # Original logo folder (the app uses the copies in app/view/static/img) and
 # temporary files left over by incomplete saves.
 logo/

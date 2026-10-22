@@ -17,7 +17,8 @@
 // to EditorView (at the end of this file); shared.js holds shared constants and functions.
 import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { apiGetBinary, apiPost } from './api.js';
-import { PDF_OPTIONS, COLORS, ERASER_DEFAULT, ERASER_PREF } from './editor/shared.js';
+import { PDF_OPTIONS, COLORS, ERASER_DEFAULT, ERASER_PREF, WIDTH_DEFAULT, WIDTH_MIN, WIDTH_MAX, WIDTH_PREF,
+  TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_PREF } from './editor/shared.js';
 import { SyncMethods } from './editor/sync.js';
 import { InputMethods } from './editor/input.js';
 import { PagesMethods } from './editor/pages.js';
@@ -57,7 +58,8 @@ export class EditorView {
     // the user's choices (presentation)
     this.tool = 'pen';
     this.color = COLORS[0];
-    this.width = 2;
+    this.width = this.storedNumber(WIDTH_PREF, WIDTH_DEFAULT, WIDTH_MIN, WIDTH_MAX);
+    this.textSize = this.storedNumber(TEXT_SIZE_PREF, TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
     this.fingerDraw = false;
     this.zoom = 1;
     this.scale = 1;
@@ -85,6 +87,7 @@ export class EditorView {
     this.lastStatus = 'saved';
     this.focusNewText = false;
     this.selection = null;      // items enclosed by the lasso (chosen by the controller)
+    this.activeText = null;     // text box being edited: { page, id }
     this.layout = null;         // layout of the next pages (of the document)
     this.layouts = [];
     this.layoutDocs?.forEach((p) => p.then((d) => d?.destroy()).catch(() => {}));
@@ -113,6 +116,8 @@ export class EditorView {
     this.setStatus('Caricamento…');
     this.showTool();
     this.showColor();
+    this.showWidth();
+    this.showTextSize(this.textSize);
     // Last part of the progress bar (if the opening is showing it): preparing the
     // PDF and drawing the first page.
     const progress = this.app.progress;
@@ -143,6 +148,13 @@ export class EditorView {
     this.listen(this.session);
   }
 
+  // A choice remembered on this iPad, if valid; otherwise the default.
+  storedNumber(key, fallback, min, max) {
+    let n = NaN;
+    try { n = Number(localStorage.getItem(key)); } catch { /* no storage available */ }
+    return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+  }
+
   hide() {
     this.els.forEach((v) => v.task?.cancel());
     this.innerEl.replaceChildren();
@@ -153,6 +165,7 @@ export class EditorView {
   // Leaving: wait until the changes have reached the controller, then ask it to
   // close (saves right away) and switch to the view it names.
   async leave() {
+    this.deactivateText();
     document.activeElement?.blur();
     await this.queue;
     if (!this.session) return;

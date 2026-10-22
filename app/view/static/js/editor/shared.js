@@ -16,9 +16,26 @@ export const HIGHLIGHT_ALPHA = 0.35;
 export const HIGHLIGHTER_FACTOR = 6;  // the highlighter is 6 times wider than the pen
 export const MIN_POINT_DIST = 0.4;    // PDF points between two consecutive samples
 // Stroke stabilisation: every point moves towards the previous one by this fraction,
-// so hand tremor disappears. With the Pencil (240 samples per second) the delay
-// is a few thousandths of a second; the last real point is added at the end.
-export const STABILIZER = 0.45;
+// so hand tremor disappears. Kept light so the stroke does not trail behind the
+// tip; while writing, the preview also joins the last point to where the Pencil
+// really is (see drawLive), and the last real point is added at the end.
+export const STABILIZER = 0.25;
+// Stroke thickness (PDF points), chosen with a slider: its position (0-100) maps
+// to the thickness on a logarithmic scale, so the thin end has fine steps.
+export const WIDTH_MIN = 0.2;
+export const WIDTH_MAX = 16;
+export const WIDTH_DEFAULT = 2;
+export const WIDTH_PREF = 'notes.penWidth';
+export const widthFromSlider = (v) => Math.round(WIDTH_MIN * (WIDTH_MAX / WIDTH_MIN) ** (v / 100) * 100) / 100;
+export const sliderFromWidth = (w) => Math.round(100 * Math.log(w / WIDTH_MIN) / Math.log(WIDTH_MAX / WIDTH_MIN));
+// Font size of text boxes (PDF points).
+export const TEXT_SIZE_MIN = 6;
+export const TEXT_SIZE_MAX = 72;
+export const TEXT_SIZE_DEFAULT = 16;
+export const TEXT_SIZE_PREF = 'notes.textSize';
+export const TEXT_W_MIN = 20;          // narrowest text box (same limit as the controller)
+// Keyboard shortcuts for the tools (outside text boxes).
+export const TOOL_KEYS = { p: 'pen', h: 'highlighter', e: 'eraser', l: 'lasso', f: 'shape', t: 'text' };
 // Geometric shapes: with the pen, holding the Pencil still (within HOLD_MOVE_PX pixels)
 // for HOLD_MS at the end of a stroke turns the stroke into the matching shape.
 export const HOLD_MS = 600;

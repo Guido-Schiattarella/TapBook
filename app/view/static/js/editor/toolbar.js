@@ -51,19 +51,36 @@ export class ToolbarMethods {
   }
 
   showTool() {
+    if (this.tool !== 'text') this.deactivateText();
     if (document.activeElement?.tagName === 'TEXTAREA') document.activeElement.blur();
     document.querySelectorAll('.tool[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === this.tool));
     this.pagesEl.classList.toggle('tool-text', this.tool === 'text');
     this.pagesEl.classList.toggle('tool-image', this.tool === 'image');
     this.pagesEl.classList.toggle('tool-lasso', this.tool === 'lasso');
-    // With the eraser, its sizes appear in place of colours and thickness.
-    const eraser = this.tool === 'eraser';
+    // With the eraser, its sizes appear in place of colours and thickness; with
+    // text, the font size in place of the thickness.
+    const eraser = this.tool === 'eraser', text = this.tool === 'text';
     this.colorsEl.hidden = eraser;
-    document.getElementById('width').hidden = eraser;
+    document.getElementById('width-control').hidden = eraser || text;
+    document.getElementById('text-size-control').hidden = !text;
     document.getElementById('eraser-sizes').hidden = !eraser;
     document.querySelectorAll('#eraser-sizes .size').forEach((b) =>
       b.classList.toggle('active', Number(b.dataset.radius) === this.eraserRadius));
     if (!eraser) this.hideEraserCursor();
+  }
+
+  // Thickness next to the slider: value in points and a dot as thick as the stroke.
+  showWidth() {
+    const w = this.width;
+    document.getElementById('width-value').textContent = (w < 1 ? w.toFixed(2) : w.toFixed(1)).replace('.', ',');
+    const d = Math.max(1, Math.min(22, w * this.scale));
+    Object.assign(document.getElementById('width-preview').style, { width: d + 'px', height: d + 'px' });
+  }
+
+  // Font size shown in the toolbar: of the active box, or of the next new one.
+  showTextSize(size) {
+    document.getElementById('text-size').value = Math.round(size);
+    document.getElementById('text-size-value').textContent = Math.round(size) + ' pt';
   }
 
   showColor() {

@@ -44,6 +44,8 @@ COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 MAX_STROKES_PER_PAGE = 20000
 MAX_POINTS_PER_STROKE = 20000
 MAX_TEXT_LEN = 20000
+TEXT_SIZE_MIN, TEXT_SIZE_MAX = 4.0, 200.0   # font size of text boxes (as read back from the PDF)
+TEXT_W_MIN = 20.0                         # narrowest text box (PDF points)
 MAX_PAGES = 2000
 MAX_IMAGE_BYTES = 30 * 1024 * 1024   # photos coming from the iPad
 MAX_IMAGES_PER_PAGE = 50
@@ -439,8 +441,9 @@ class EditController:
         if len(page["texts"]) >= MAX_TEXTS_PER_PAGE:
             raise InvalidInput("Troppe caselle di testo in questa pagina")
         x, y = _num(op.get("x"), 0, page["w"]), _num(op.get("y"), 0, page["h"])
-        t = {"id": new_id(), "x": x, "y": max(0.0, y - 10), "w": min(260.0, page["w"] - x - 10),
-             "h": 30.0, "size": 16.0, "color": _color(op.get("color", "#000000")), "text": ""}
+        size = _num(op.get("size", 16), TEXT_SIZE_MIN, TEXT_SIZE_MAX)
+        t = {"id": new_id(), "x": x, "y": max(0.0, y - size * 0.6), "w": min(260.0, page["w"] - x - 10),
+             "h": max(30.0, size * 1.6), "size": size, "color": _color(op.get("color", "#000000")), "text": ""}
         if t["w"] < 60:
             t["x"], t["w"] = max(0.0, page["w"] - 270), 260.0
         self._push(client, undo=lambda: doc.remove_text(pid, t["id"]),
@@ -468,6 +471,29 @@ class EditController:
         before = {"x": t["x"], "y": t["y"]}
         after = {"x": _num(op.get("x"), -5000, 20000), "y": _num(op.get("y"), -5000, 20000)}
         if before != after:
+            self._push(client, undo=lambda: doc.update_text(pid, tid, **before),
+                       redo=lambda: doc.update_text(pid, tid, **after))
+
+    def _op_changeText(self, client, op):
+        """Box resized, or new font size or colour: one undo step. Only the fields
+        present in the operation change."""
+        doc, pid, tid = client.room.doc, _id(op.get("page")), _id(op.get("id"))
+        t = doc.text(pid, tid)
+        after = {}
+        if "w" in op:
+            after["w"] = _num(op["w"], TEXT_W_MIN, 20000)
+        if "h" in op:
+            after["h"] = _num(op["h"], 10, 5000)
+        if "size" in op:
+            after["size"] = _num(op["size"], TEXT_SIZE_MIN, TEXT_SIZE_MAX)
+        if "color" in op:
+            after["color"] = _color(op["color"])
+        before = {k: t[k] for k in after}
+        if before != after:
+            # A text edit in progress keeps its starting height for "undo" in step.
+            key = (pid, tid)
+            if key in client.text_before and "h" in after:
+                client.text_before[key]["h"] = after["h"]
             self._push(client, undo=lambda: doc.update_text(pid, tid, **before),
                        redo=lambda: doc.update_text(pid, tid, **after))
 

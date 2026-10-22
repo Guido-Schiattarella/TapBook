@@ -124,6 +124,7 @@ export class SyncMethods {
         break;
       case 'textRemoved':
         page.texts = page.texts.filter((t) => t.id !== ev.id);
+        if (this.activeText?.id === ev.id) { this.activeText = null; this.showTextSize(this.textSize); }
         this.renderTexts(page);
         break;
       case 'textChanged': {
