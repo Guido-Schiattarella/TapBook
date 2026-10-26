@@ -60,6 +60,10 @@ ordinary PDF files in a folder on your computer.
 - Folders, new notebooks with a pastel colour and a page layout. Layouts: blank,
   ruled, grid, dotted, and Cornell ruled or Cornell grid.
 - Import any PDF from the iPad, then add, remove or change the layout of pages.
+- Fast reopening: each device keeps the pages it has already downloaded, so a
+  document opens without downloading it again. Only pages changed on the computer
+  (by another program) are downloaded again; pages added, removed or moved with
+  TapBook never need a download.
 - Search across all your documents: names, folders and the text inside the PDFs
   (lecture notes, slides…). Capitals and accents do not matter.
 - Trash with restore, so deleted items can be brought back.
@@ -176,6 +180,12 @@ You can also add, copy or back up PDFs there directly from the computer.
 
 **Rendering and saving**
 - The iPad renders the pages with pdf.js and records the strokes.
+- The pages without the notes (the "background") are downloaded once and kept
+  on the device (browser Cache Storage, up to 1 GB, separate for each user and
+  cleared when logging out). Every page has a fingerprint of its content: when
+  a document is opened again, only the pages whose fingerprint is new are
+  downloaded. The computer keeps a copy of these backgrounds in its data folder
+  (`backgrounds`), deleted 30 days after the document was last opened.
 - Each stroke is sent to the computer as soon as it is finished, so nothing is
   lost if Safari closes.
 - About one second after the last change, the server writes the strokes, text
@@ -303,6 +313,12 @@ or the server in the terminal (Ctrl+C stops it):
 **Installing from the source folder:** `bash installer/linux/install.sh` on Linux.
 On Windows, right-click `installer\windows\Install TapBook.cmd` and choose *Run as
 administrator*.
+
+**Running the tests** (security, saving, collaboration, shapes, backgrounds):
+```bash
+.venv/bin/python tests/run_all.py
+```
+`tests/bench.py` measures the speed of the main server operations.
 
 **Building the release packages:**
 ```bash

@@ -6,6 +6,7 @@
 // the name of the view to switch to. The view decides nothing on its own.
 import { tabId } from './device.js';
 import { apiPost, apiPostProgress, reportError } from './api.js';
+import { clearBackgrounds } from './bgcache.js';
 import { Progress } from './progress.js';
 import { LibraryView } from './library_view.js';
 import { EditorView } from './editor_view.js';
@@ -16,11 +17,21 @@ import { Shell } from './shell.js';
 
 class App {
   constructor() {
+    // Logged-in user: the backgrounds kept on this device are separate for each user.
+    this.user = document.getElementById('shell').dataset.user || '';
     this.views = {
       library: new LibraryView(this), editor: new EditorView(this), search: new SearchView(this),
       trash: new TrashView(this), account: new AccountView(this),
     };
     this.shell = new Shell(this);
+    // Logging out: this user's backgrounds are removed from the device first.
+    document.querySelector('form[action="/logout"]')?.addEventListener('submit', (e) => {
+      const form = e.target;
+      if (form.dataset.cleared) return;
+      e.preventDefault();
+      const done = () => { form.dataset.cleared = '1'; form.submit(); };
+      Promise.race([clearBackgrounds(this.user), new Promise((r) => setTimeout(r, 2000))]).then(done, done);
+    });
     this.progress = new Progress();
     this.current = null;
     // Browser back/forward buttons: ask the controller for the view of that address.
@@ -56,7 +67,11 @@ class App {
     // Opening: the tab says who it is (a reload of the same tab is not one more device).
     if (url === '/api/open') body = { ...body, device: tabId() };
     const result = progress ? await this.withProgress(url, body, progress) : await apiPost(url, body);
-    if (result.redirect) { location.href = result.redirect; return result; }  // e.g. account deleted
+    if (result.redirect) {                       // e.g. account deleted: its backgrounds go too
+      await Promise.race([clearBackgrounds(this.user), new Promise((r) => setTimeout(r, 2000))]).catch(() => {});
+      location.href = result.redirect;
+      return result;
+    }
     this.show(result, { push });
     return result;
   }

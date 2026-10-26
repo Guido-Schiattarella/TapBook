@@ -12,7 +12,7 @@ Notified events (dictionaries):
   textChanged   {page, text}
   imageAdded    {page, image, index}       imageRemoved  {page, id}
   imageChanged  {page, image}
-  pagesChanged  {pages: [{id, w, h, render, layout, strokes, texts, images}, ...]}
+  pagesChanged  {pages: [{id, w, h, bg, layout, strokes, texts, images}, ...]}
   layoutChanged {layout}                   layout chosen for the next pages
   backgroundChanged {pages}   the PDF on disk was changed by another program
                               and the changes were merged: the view must
@@ -32,6 +32,7 @@ import uuid
 from pathlib import Path
 
 from . import pdf_store, save_worker
+from .backgrounds import BackgroundStore
 
 
 def new_id() -> str:
@@ -44,17 +45,19 @@ class PageStructureChanged(Exception):
 
 
 class OpenDocument:
-    def __init__(self, path: Path, pagecache: Path, pictures_dir: Path):
+    def __init__(self, path: Path, pagecache: Path, pictures_dir: Path, backgrounds: BackgroundStore):
         self.path = path
         self.pagecache = pagecache
         self.pictures_dir = pictures_dir   # pictures/<document>: image files
+        self.backgrounds = backgrounds     # stored backgrounds (see backgrounds.py)
         clean, layer, revision = pdf_store.load_document(path)
-        self.base_pdf = clean           # PDF without notes: background for the view
         self.revision = revision        # version of the file on disk
         self.doc_id = layer["docId"]
         self.next_layout = layer["nextLayout"]   # layout of the pages that will be added
         self.pages = layer["pages"]     # pagine attuali, in ordine
         self.all_pages = {p["id"]: p for p in self.pages}  # deleted ones too (undo)
+        # Nobody has the document open yet: backgrounds no longer used can be removed.
+        self._assign_backgrounds(clean, self.pages, tidy=True)
         self._listeners = []
         self.last_saved = path.read_bytes()   # the PDF as the last save left it
         self._take_snapshot()
@@ -90,7 +93,7 @@ class OpenDocument:
     @staticmethod
     def view_page(p) -> dict:
         """What the view needs to draw a page."""
-        return {"id": p["id"], "w": p["w"], "h": p["h"], "render": p.get("render"),
+        return {"id": p["id"], "w": p["w"], "h": p["h"], "bg": p.get("bg"),
                 "layout": p.get("layout"), "strokes": p["strokes"], "texts": p["texts"], "images": p.setdefault("images", [])}
 
     def view_pages(self):
@@ -224,7 +227,7 @@ class OpenDocument:
     def new_blank_page(self, like: dict, layout: str) -> dict:
         """New page, as large as `like`, with the given layout (drawn into the PDF
         when saving)."""
-        page = {"id": new_id(), "src": None, "render": None, "blank": True, "layout": layout,
+        page = {"id": new_id(), "src": None, "bg": None, "blank": True, "layout": layout,
                 "w": like["w"], "h": like["h"], "strokes": [], "texts": [], "images": []}
         self.all_pages[page["id"]] = page
         return page
@@ -290,13 +293,38 @@ class OpenDocument:
                     # changed only by the other program: its version counts
                     self.update_text(page["id"], text_id, text=disk_texts[text_id])
 
-        # The file is now the new base: the background changes and the pages refer to it.
-        self.base_pdf = clean
+        # The file is now the new base: the pages refer to its backgrounds (only the
+        # pages changed on the computer need a new one).
         self.revision = revision
+        disk_order = [None] * len(disk_pages)
         for p in self.all_pages.values():
-            p["render"] = p["src"]
+            if p["src"] is not None and p["src"] < len(disk_order):
+                disk_order[p["src"]] = p
+        refs = self._assign_backgrounds(clean, disk_order, tidy=False)
+        for p in self.all_pages.values():
+            if p["src"] is None or p["src"] >= len(refs):
+                p["bg"] = None
         self._take_snapshot_from_disk(disk_pages)
-        self._notify("backgroundChanged", pages=self.view_pages())
+        self._notify("backgroundChanged", pages=self.view_pages(), backgrounds=self.background_sizes())
+
+    def _assign_backgrounds(self, clean: bytes, file_pages: list, tidy: bool) -> list:
+        """Background reference of every page of the file (file_pages: the page at
+        each position of the file, or None if not known)."""
+        page_layouts = [(p["layout"], p["w"], p["h"]) if p and p.get("layout") else None for p in file_pages]
+        refs = self.backgrounds.prepare(self.doc_id, clean, page_layouts, self.revision, tidy)
+        for p, ref in zip(file_pages, refs):
+            if p is not None:
+                p["bg"] = ref
+        return refs
+
+    def background_path(self, bg_id) -> Path:
+        """File of one of this document's backgrounds (LookupError otherwise)."""
+        return self.backgrounds.path(self.doc_id, bg_id)
+
+    def background_sizes(self) -> dict:
+        """{background id: bytes} of the backgrounds the current pages use."""
+        sizes = self.backgrounds.sizes(self.doc_id)
+        return {p["bg"]["id"]: sizes.get(p["bg"]["id"], 0) for p in self.pages if p.get("bg")}
 
     def _take_snapshot_from_disk(self, disk_pages):
         self.snapshot = [{"strokes": {s["id"] for s in dp["strokes"]},

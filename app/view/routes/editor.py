@@ -56,12 +56,12 @@ def register(app):
     @app.get("/api/edit/background")
     @api
     def api_edit_background():
-        """Background PDF of the open document: on opening and after merging changes
-        made on the computer. It travels as a binary file sent in chunks: even a
-        large PDF gets through a slow network without the server having to write it all at once."""
-        pdf = controllers().editing.background(g.username, request.args.get("session"))
-        resp = send_file(io.BytesIO(pdf), mimetype="application/pdf", conditional=False)
-        resp.headers["Cache-Control"] = "no-store"
+        """One of the background PDFs of the open document (id: see backgrounds.py),
+        downloaded only by devices that do not have it yet. It travels as a binary
+        file sent in chunks: even a large PDF gets through a slow network."""
+        path = controllers().editing.background(g.username, request.args.get("session"), request.args.get("id"))
+        resp = send_file(path, mimetype="application/pdf", conditional=False)
+        resp.headers["Cache-Control"] = "no-store"   # the editor keeps it itself (bgcache.js)
         return resp
 
     @app.post("/api/edit/close")

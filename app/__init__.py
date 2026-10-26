@@ -16,7 +16,7 @@ Layout:
 
 # App version: bump it for every new GitHub Release (tag "v" + version,
 # e.g. v1.1.0). The control panel compares it with the latest Release.
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 # GitHub repository of the official Releases, "owner/repository". Empty: the
 # control panel does not check for updates. Whoever installs the app can change it
 # or turn the check off in config.ini (update_repository, update_check).

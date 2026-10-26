@@ -6,7 +6,7 @@
    request. The list views sit inside the "frame" with sidebar and top bar; the
    editor takes the whole screen. #}
 
-<div id="shell" class="shell" hidden>
+<div id="shell" class="shell" data-user="{{ username }}" hidden>
   <aside class="sidebar">
     <div class="brand">
       <img class="brand-logo" src="{{ url_for('static', filename='img/logo.png') }}" alt="">

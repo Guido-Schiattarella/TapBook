@@ -26,7 +26,8 @@ import threading
 import time
 from pathlib import Path
 
-from ..model import layouts, pdf_store, save_worker
+from ..model import backgrounds, layouts, pdf_store, save_worker
+from ..model.backgrounds import BackgroundStore
 from ..model.document import OpenDocument, PageStructureChanged, new_id
 from ..model.pictures import InvalidPicture, prepare_picture
 from . import geometry, shapes
@@ -208,9 +209,12 @@ class Client:
 
 
 class EditController:
-    def __init__(self, library, pagecache_root: Path, idle_minutes: float = 15):
+    def __init__(self, library, pagecache_root: Path, idle_minutes: float = 15, backgrounds_root: Path | None = None):
         self.library = library
         self.pagecache_root = pagecache_root
+        # Backgrounds stored so that the devices download them only once (backgrounds.py).
+        self.backgrounds_root = backgrounds_root or pagecache_root.parent / "backgrounds"
+        backgrounds.expire(self.backgrounds_root)         # documents not opened for a long time
         self.idle_seconds = idle_minutes * 60
         self.rooms: dict[tuple, Room] = {}
         self.clients: dict[str, Client] = {}
@@ -238,7 +242,7 @@ class EditController:
             if room is None:
                 folder = self.library.folder(username)
                 doc = OpenDocument(folder.resolve(rel), self.pagecache_root / username,
-                                   folder.pictures_dir(rel))
+                                   folder.pictures_dir(rel), BackgroundStore(self.backgrounds_root / username))
                 with self.lock:
                     if key in self.rooms:
                         continue  # opened by another device in the meantime
@@ -257,6 +261,7 @@ class EditController:
                 result = {"session": client.id, "path": rel,
                           "pages": room.doc.view_pages(), "canUndo": False, "canRedo": False,
                           "status": self._public_state(room), "devices": len(room.clients),
+                          "backgrounds": room.doc.background_sizes(),
                           "layout": room.doc.next_layout, "layouts": self.library.layout_catalog(),
                           "eraserRadius": ERASER_RADIUS}
                 room.broadcast([{"event": "devices", "count": len(room.clients)}], exclude=client)
@@ -398,11 +403,15 @@ class EditController:
                 raise SessionGone(self.closed.get(client.id, "unknown"))
             return self._reply(client, [])
 
-    def background(self, username: str, client_id: str) -> bytes:
-        """Current background PDF: on opening and after merging changes made on the computer."""
+    def background(self, username: str, client_id: str, bg_id) -> Path:
+        """File of one of the backgrounds of the open document (only of that document:
+        a device downloads it if it does not have it yet)."""
         client = self._get(username, client_id)
         with client.room.lock:
-            return client.room.doc.base_pdf
+            try:
+                return client.room.doc.background_path(bg_id)
+            except LookupError:
+                raise NotFound("Sfondo non trovato")
 
     def _reply(self, client: Client, mine: list) -> dict:
         """Response for a device: first the news from the others, then its own."""

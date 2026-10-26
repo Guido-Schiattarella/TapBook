@@ -139,7 +139,7 @@ export class InputMethods {
     let resizeTimer = null;
     window.addEventListener('resize', () => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => { if (this.pdf) { this.computeScale(); this.buildPages(); } }, 200);
+      resizeTimer = setTimeout(() => { if (this.ready) { this.computeScale(); this.buildPages(); } }, 200);
     });
     window.addEventListener('beforeunload', (e) => {
       if (this.inFlight > 0) e.preventDefault();  // changes not yet received by the computer

@@ -58,7 +58,8 @@ def build_auth(config: Config) -> AuthController:
 def build_controllers(config: Config) -> Controllers:
     auth = build_auth(config)
     library = LibraryController(config.notes_root)
-    editing = EditController(library, config.data_dir / "pagecache", config.edit_idle_minutes)
+    editing = EditController(library, config.data_dir / "pagecache", config.edit_idle_minutes,
+                             config.data_dir / "backgrounds")
     navigation = NavigationController(library, editing)
     account = AccountController(auth, library, editing, config.notes_root)
     diagnostics = DiagnosticsController(ClientLog(config.data_dir))

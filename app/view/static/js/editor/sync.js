@@ -179,7 +179,7 @@ export class SyncMethods {
         // The PDF was changed on the computer and the controller merged the changes:
         // download the background again and redraw everything.
         this.pages = ev.pages;
-        this.reloadBackground();
+        this.reloadBackground(ev.backgrounds || {});
         break;
       case 'selection':
         // Lasso response: the controller says what was enclosed.
@@ -203,16 +203,20 @@ export class SyncMethods {
     }
   }
 
-  async reloadBackground() {
+  // The file was changed on the computer and merged: only the backgrounds of the
+  // pages that changed are new (downloaded if this device does not have them).
+  async reloadBackground(sizes) {
     const session = this.session;
-    const resp = await fetch('/api/edit/background?session=' + encodeURIComponent(session), { credentials: 'same-origin' });
-    if (!resp.ok || session !== this.session) return;
-    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await resp.arrayBuffer()), ...PDF_OPTIONS }).promise;
-    if (session !== this.session) { pdf.destroy(); return; }
-    const old = this.pdf;
-    this.pdf = pdf;
+    try {
+      await this.loadBackgrounds(sizes);
+    } catch (e) {
+      if (session === this.session) this.showBanner(`Le pagine aggiornate non si sono scaricate (${e.message}).`);
+      return;
+    }
+    if (session !== this.session) return;
+    // The old backgrounds stay open (an "undo" may bring back a page that uses them):
+    // they are closed when the editor is left.
     this.buildPages();
-    old?.destroy();
     this.notice('Unite le modifiche fatte sul PC');
   }
 }

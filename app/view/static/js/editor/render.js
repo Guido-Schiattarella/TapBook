@@ -48,14 +48,14 @@ export class RenderMethods {
     this.drawInk(page);
     if (!region) { this.placeCanvas(v.base, null); return; }
     let pdfPage = null;
-    if (page.render == null) {
-      // Page added in this session: background with its layout (unless it is blank).
-      if (page.layout && page.layout !== 'blank') {
-        const doc = await this.layoutPdf(page);
-        if (doc) pdfPage = await doc.getPage(1);
-      }
-    } else {
-      pdfPage = await this.pdf.getPage(page.render + 1);
+    if (page.bg) {
+      // Page of a background (downloaded once, then kept on this device).
+      const doc = await this.bgDocs.get(page.bg.id);
+      if (doc) pdfPage = await doc.getPage(page.bg.page + 1);
+    } else if (page.layout && page.layout !== 'blank') {
+      // Untouched layout page (blank, lined…): drawn from the small layout page.
+      const doc = await this.layoutPdf(page);
+      if (doc) pdfPage = await doc.getPage(1);
     }
     if (v.renderId !== id || !v.rendered || this.els.get(page.id) !== v) return;  // superseded by a newer drawing
     // The background is drawn on a new canvas and replaces the old one only when

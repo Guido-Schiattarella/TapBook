@@ -346,7 +346,10 @@ def load_document(path: Path):
     next_layout = stored.get("nextLayout")
     if not layouts.exists(next_layout):
         next_layout = pages[-1]["layout"] if pages and pages[-1]["layout"] else layouts.DEFAULT
-    return clean, {"version": LAYER_VERSION, "docId": doc_id or uuid.uuid4().hex,
+    # A PDF never saved by the app has no id yet: it is derived from the file's
+    # content, so it is the same at every opening (the stored backgrounds and the
+    # devices' caches find it again) and is written into the file at the first save.
+    return clean, {"version": LAYER_VERSION, "docId": doc_id or hashlib.sha256(rev.encode()).hexdigest()[:32],
                    "nextLayout": next_layout, "pages": pages}, rev
 
 

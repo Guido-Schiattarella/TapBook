@@ -17,6 +17,7 @@
 // to EditorView (at the end of this file); shared.js holds shared constants and functions.
 import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { apiGetBinary, apiPost } from './api.js';
+import { getBackground, putBackground, dropBackground } from './bgcache.js';
 import { PDF_OPTIONS, COLORS, ERASER_DEFAULT, ERASER_PREF, LEAVE_WAIT_MS,
   TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_PREF } from './editor/shared.js';
 import { SyncMethods } from './editor/sync.js';
@@ -78,7 +79,8 @@ export class EditorView {
   reset() {
     this.session = null;
     this.path = '';
-    this.pdf = null;
+    this.ready = false;
+    this.bgDocs = new Map();    // background id -> PDF (pdf.js), see loadBackgrounds
     this.pages = [];            // display copy received from the controller
     this.els = new Map();       // page id -> DOM elements
     this.pendingStrokes = new Map();  // strokes sent, waiting for confirmation
@@ -107,7 +109,7 @@ export class EditorView {
     // Shown again (reopening after a pause): the previous PDF and its pages are
     // freed first, otherwise every reopening would keep one more copy in memory.
     this.els?.forEach((v) => this.discardPage(v));
-    this.pdf?.destroy();
+    this.destroyBackgrounds();
     this.reset();
     this.session = data.session;
     this.path = data.path;
@@ -126,27 +128,23 @@ export class EditorView {
     this.showColor();
     this.showWidth();
     this.showTextSize(this.textSize);
-    // Last part of the progress bar (if the opening is showing it): preparing the
-    // PDF and drawing the first page.
+    // Last part of the progress bar (if the opening is showing it): the backgrounds
+    // (PDF without the notes) this device does not have yet, then the first page.
     const progress = this.app.progress;
     const session = this.session;
-    // The PDF is downloaded separately, as a binary file: measured progress, no
-    // conversion to text, less data and less memory on the iPad.
-    let bytes;
     try {
-      bytes = await apiGetBinary('/api/edit/background', { session },
-        (loaded, total) => progress.transfer('Scaricamento', loaded, total, 0.05, 0.85));
+      await this.loadBackgrounds(data.backgrounds || {}, (loaded, total) =>
+        progress.transfer('Scaricamento', loaded, total, 0.05, 0.85));
     } catch (e) {
       progress.fail();
       if (session === this.session) this.showBanner(`Il documento non si è scaricato (${e.message}).`);
       return;
     }
     if (session !== this.session) return;     // something else was opened in the meantime
-    progress.set(0.88, 'Preparazione delle pagine…');
+    progress.set(0.9, 'Preparazione delle pagine…');
     this.firstPage = new Promise((resolve) => { this.firstDrawn = resolve; setTimeout(resolve, 3000); });
     this.firstPage.then(() => progress.done());
-    this.pdf = await pdfjsLib.getDocument({ data: bytes, ...PDF_OPTIONS }).promise;
-    progress.set(0.95);
+    this.ready = true;
     this.computeScale();
     this.buildPages();
     // Opened from a search result: go to the matching page.
@@ -154,6 +152,51 @@ export class EditorView {
     if (start) this.els.get(start.id).el.scrollIntoView({ block: 'start' });
     this.showStatus(data.status);
     this.listen(this.session);
+  }
+
+  // Backgrounds of the document: those already on this device are taken from its
+  // cache, the others downloaded (all together in the progress) and kept for next
+  // time. sizes: {background id: bytes}, from the controller.
+  async loadBackgrounds(sizes, onProgress) {
+    const user = this.app.user;
+    const missing = [];
+    for (const id of Object.keys(sizes)) {
+      if (this.bgDocs.has(id)) continue;
+      const bytes = await getBackground(user, id);
+      if (bytes) this.bgDocs.set(id, this.openBackground(id, bytes, true));
+      else missing.push(id);
+    }
+    const total = missing.reduce((t, id) => t + (sizes[id] || 0), 0);
+    let done = 0;
+    for (const id of missing) {
+      const bytes = await apiGetBinary('/api/edit/background', { session: this.session, id },
+        (loaded) => onProgress?.(done + loaded, total));
+      done += bytes.length;
+      putBackground(user, id, bytes.slice());   // kept for next time (a copy: pdf.js takes the bytes)
+      this.bgDocs.set(id, this.openBackground(id, bytes, false));
+    }
+  }
+
+  // pdf.js document of a background. If one taken from the cache cannot be read,
+  // it is removed from the cache and downloaded again.
+  openBackground(id, bytes, cached) {
+    const opening = pdfjsLib.getDocument({ data: bytes, ...PDF_OPTIONS }).promise;
+    if (!cached) return opening;
+    return opening.catch(async () => {
+      await dropBackground(this.app.user, id);
+      const fresh = await apiGetBinary('/api/edit/background', { session: this.session, id });
+      putBackground(this.app.user, id, fresh.slice());
+      return pdfjsLib.getDocument({ data: fresh, ...PDF_OPTIONS }).promise;
+    });
+  }
+
+  // Backgrounds no longer used by any page (keep: ids still needed) are closed.
+  destroyBackgrounds(keep = new Set()) {
+    for (const [id, doc] of this.bgDocs || []) {
+      if (keep.has(id)) continue;
+      doc.then((d) => d.destroy()).catch(() => {});
+      this.bgDocs.delete(id);
+    }
   }
 
   // A choice remembered on this iPad, if valid; otherwise the default.
@@ -166,7 +209,7 @@ export class EditorView {
   hide() {
     this.els.forEach((v) => this.discardPage(v));
     this.innerEl.replaceChildren();
-    this.pdf?.destroy();
+    this.destroyBackgrounds();
     this.reset();
   }
 
