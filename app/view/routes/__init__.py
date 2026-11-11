@@ -6,10 +6,11 @@ the controller and returns its answer (HTML page or JSON).
   account.py  profile photo, password change, account deletion
   editor.py   editor operations, notifications, images, backgrounds
   diagnostics.py  errors of the interface reported by the browser
+  sync.py     TapBook Sync, the service that keeps a computer's folder aligned
 """
-from . import account, diagnostics, editor, library, pages
+from . import account, diagnostics, editor, library, pages, sync
 
 
 def register_all(app):
-    for module in (pages, library, account, editor, diagnostics):
+    for module in (pages, library, account, editor, diagnostics, sync):
         module.register(app)

@@ -1,8 +1,9 @@
 // VIEW — editor, input from Apple Pencil, finger and mouse; strokes, geometric shapes (press and hold), eraser.
 // EditorView methods (see editor_view.js): here `this` is the editor.
 import { apiPost, reportError } from '../api.js';
-import { COLORS, HIGHLIGHTER_FACTOR, MIN_POINT_DIST, STABILIZER, HOLD_MS, HOLD_MOVE_PX, SNAP_PX, SHAPE_MAX_POINTS, GESTURE_POINT_DIST, GESTURE_MAX_POINTS, uid, ERASER_PREF, touches, isStylus,
-  widthFromSlider, TEXT_SIZE_PREF, TOOL_KEYS, PREDICT_MS, PREDICT_MAX_PX, STAB_FULL_PX, STAB_NONE_PX } from './shared.js';
+import { COLORS, HIGHLIGHTER_FACTOR, MIN_POINT_DIST, STABILIZER, HOLD_MS, HOLD_MOVE_PX, SNAP_PX, SHAPE_MAX_POINTS, GESTURE_POINT_DIST, GESTURE_MAX_POINTS, uid, ERASER_PREF, touches,
+  widthFromSlider, TEXT_SIZE_PREF, TOOL_KEYS, PREDICT_MS, PREDICT_MAX_PX, STAB_FULL_PX, STAB_NONE_PX, OP_TIMEOUT_MS,
+  PALM_RADIUS, PALM_RADIUS_PINCH } from './shared.js';
 
 export class InputMethods {
   // =====================================================================
@@ -63,6 +64,10 @@ export class InputMethods {
     document.getElementById('btn-del-page').addEventListener('click', () => this.deletePage());
     document.getElementById('btn-zoom-in').addEventListener('click', () => this.zoomBy(1.25));
     document.getElementById('btn-zoom-out').addEventListener('click', () => this.zoomBy(0.8));
+    document.getElementById('btn-paste').addEventListener('click', () => this.paste());
+    document.getElementById('btn-pages').addEventListener('click', () => this.openPageChooser());
+    this.navEl.addEventListener('click', () => this.openPageChooser());
+    this.bindPageChooser();
     document.getElementById('btn-back').addEventListener('click', () => this.leave());
     document.getElementById('btn-photo').addEventListener('click', () => this.pickImage(null));
     this.imageInput.addEventListener('change', () => {
@@ -89,24 +94,30 @@ export class InputMethods {
         this.removeSelection();
       } else if (mod && key === 'z') { e.preventDefault(); this.send({ type: e.shiftKey ? 'redo' : 'undo' }); }
       else if (mod && key === 'y') { e.preventDefault(); this.send({ type: 'redo' }); }
+      // Copy, cut and paste of the items (inside a text box the keys copy the words, see above).
+      else if (mod && key === 'c') { if (this.copy()) e.preventDefault(); }
+      else if (mod && key === 'x') { if (this.hasSelection()) { e.preventDefault(); this.cut(); } }
+      // Ctrl+V is handled by the "paste" event below (it brings the system clipboard too).
+      // Page up / page down, arrows with the modifier: previous and next page.
+      else if (key === 'pageup' || (mod && key === 'arrowup')) { e.preventDefault(); this.nextPage(-1); }
+      else if (key === 'pagedown' || (mod && key === 'arrowdown')) { e.preventDefault(); this.nextPage(1); }
       else if (!mod && !e.altKey && TOOL_KEYS[key]) { e.preventDefault(); this.selectTool(TOOL_KEYS[key]); }
     });
 
-    // Touches: two fingers = pinch zoom; Pencil (and finger with "Dito" on)
-    // = writing, so the page must not scroll.
-    this.pagesEl.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 2 && !isStylus(e.touches)) { this.startPinch(e); e.preventDefault(); return; }
-      this.blockScroll(e);
-    }, { passive: false });
-    this.pagesEl.addEventListener('touchmove', (e) => {
-      if (this.pinch) { this.movePinch(e); e.preventDefault(); return; }
-      this.blockScroll(e);
-    }, { passive: false });
-    const endTouch = (e) => { if (this.pinch && e.touches.length < 2) this.endPinch(); };
-    this.pagesEl.addEventListener('touchend', endTouch);
-    this.pagesEl.addEventListener('touchcancel', endTouch);
+    // Touches (finger scrolling, pinch zoom, swipe, taps, long press): touch.js.
+    this.bindTouch();
     // Safari: prevents zooming the whole web page (we handle zoom ourselves).
     document.addEventListener('gesturestart', (e) => e.preventDefault());
+    // Pasting from the system clipboard (Ctrl+V / Cmd+V): text becomes a text box,
+    // an image a picture, at the mouse position; our own copied items if the
+    // clipboard holds their mark. Inside a text box the browser pastes the words.
+    document.addEventListener('paste', (e) => {
+      if (!this.session || this.element.hidden || document.querySelector('dialog[open]')) return;
+      const t = e.target;
+      if (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable) return;
+      e.preventDefault();
+      this.pasteData(e.clipboardData, this.pointerTarget());
+    });
 
     // An error while handling the Pencil must never leave a stroke "open" (the pen
     // would stop writing until the page is reloaded): the gesture is closed and
@@ -118,8 +129,18 @@ export class InputMethods {
     this.pagesEl.addEventListener('pointermove', safe(this.pointerMove));
     this.pagesEl.addEventListener('pointerup', safe(this.pointerUp));
     this.pagesEl.addEventListener('pointercancel', safe(this.pointerUp));
-    // The pen side button is a "right click": no browser menu over the pages.
-    this.pagesEl.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Right click of the mouse: our menu (copy, cut, paste…). The pen side button
+    // is a "right click" too for the browser, but it moves the sheet (see startPan).
+    this.pagesEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (performance.now() - (this.penButtonAt || 0) < 600) return;
+      this.showMenu(e.clientX, e.clientY);
+    });
+    // Where the mouse (or the hovering pen) is: used to paste there.
+    this.pagesEl.addEventListener('pointermove', (e) => {
+      if (e.pointerType !== 'touch') this.pointer = { x: e.clientX, y: e.clientY };
+    });
+    this.pagesEl.addEventListener('pointerleave', () => { this.pointer = null; });
     // Safari can lose the pointer capture without sending "pointerup": the stroke
     // ends there instead of staying open.
     this.pagesEl.addEventListener('lostpointercapture', safe((e) => {
@@ -128,12 +149,21 @@ export class InputMethods {
     // A single tap (not a scroll) creates text boxes and images.
     this.pagesEl.addEventListener('click', (e) => this.pageClick(e));
 
-    // With strong zoom the pages are drawn in pieces: scrolling updates the piece.
-    let regionTimer = null;
+    // With strong zoom the pages are drawn in pieces: scrolling updates the piece,
+    // once per frame, remembering the direction (the piece reaches further that way).
+    let regionFrame = null, scrollEnd = null, lastX = this.pagesEl.scrollLeft, lastY = this.pagesEl.scrollTop;
     this.pagesEl.addEventListener('scroll', () => {
       if (!this.pinch) this.showNav();
-      if (regionTimer) return;
-      regionTimer = setTimeout(() => { regionTimer = null; this.checkRegions(); }, 80);
+      this.schedulePosition();
+      const x = this.pagesEl.scrollLeft, y = this.pagesEl.scrollTop;
+      this.lastScrollAt = performance.now();
+      this.scrollDir = { x: Math.sign(x - lastX) || this.scrollDir?.x || 0, y: Math.sign(y - lastY) || this.scrollDir?.y || 0 };
+      lastX = x; lastY = y;
+      // When the scrolling stops (the browser's sliding too): what waited is drawn.
+      clearTimeout(scrollEnd);
+      scrollEnd = setTimeout(() => { if (!this.finger?.moved) this.flushDeferred(); }, 160);
+      if (regionFrame) return;
+      regionFrame = requestAnimationFrame(() => { regionFrame = null; if (!this.pinch) this.checkRegions(); });
     }, { passive: true });
 
     let resizeTimer = null;
@@ -146,15 +176,28 @@ export class InputMethods {
     });
   }
 
-  blockScroll(e) {
-    const draws = isStylus(e.touches) || (this.fingerDraw && !['text', 'image'].includes(this.tool));
-    if (draws && e.target.closest('.page') && !e.target.closest('.textbox, .imagebox, .selection')) e.preventDefault();
+  // Palm rejection: a finger touch is the hand (not a finger) when it is much
+  // larger than a fingertip, or while the Pencil is on the screen. Such touches do
+  // nothing: no scrolling, no zoom, no finger stroke. As soon as the Pencil is
+  // lifted a finger scrolls at once (no waiting time).
+  // Two fingers together are almost always a wanted pinch (the thumb has a wide
+  // contact area, so the size check is loose there).
+  isPalm(e) {
+    const fingers = this.fingersOf(e);
+    if (!fingers.length) return false;
+    const size = (t) => Math.max(t.radiusX || 0, t.radiusY || 0);
+    if (this.penDown || this.gesture?.pointerType === 'pen') return true;   // the Pencil is on the screen
+    if (fingers.length >= 2) return fingers.some((t) => size(t) > PALM_RADIUS_PINCH);
+    return size(fingers[0]) > PALM_RADIUS;
   }
 
-  // Palm rejection: Pencil and mouse always draw; the finger only with "Dito" on.
+
+  // Palm rejection: Pencil and mouse always draw; the finger only with "Dito" on,
+  // and never the hand (a touch as large as a palm).
   acceptsPointer(e) {
     if (e.pointerType === 'pen') return true;
     if (e.pointerType === 'mouse') return e.button === 0;
+    if (Math.max(e.width || 0, e.height || 0) > 2 * PALM_RADIUS) return false;
     return this.fingerDraw && !this.pinch;
   }
 
@@ -169,13 +212,16 @@ export class InputMethods {
   }
 
   pointerDown(e) {
-    // Side button of the pens that have one: eraser, and pressed again back to the
-    // previous tool. For the browser it is a "right click" of the pen.
-    if (e.pointerType === 'pen' && (e.button === 2 || (e.buttons & 2))) {
+    if (e.pointerType === 'pen') this.penTouched(e);
+    // Side button of the pens that have one (and the middle button of the mouse):
+    // a hand that moves the sheet. For the browser it is a "right click" of the pen.
+    if ((e.pointerType === 'pen' && (e.button === 2 || (e.buttons & 2))) || (e.pointerType === 'mouse' && e.button === 1)) {
       e.preventDefault();
-      if (!this.gesture) this.togglePenEraser();
+      this.penButtonAt = performance.now();     // the "contextmenu" that follows is not a right click
+      if (!this.gesture) this.startPan(e);
       return;
     }
+    this.hideMenu();
     // Eraser end of the pens that have one: it erases while it touches, then the
     // tool in use stays the same.
     const tool = e.pointerType === 'pen' && (e.button === 5 || (e.buttons & 32)) ? 'eraser' : this.tool;
@@ -196,6 +242,7 @@ export class InputMethods {
     } else if (tool === 'lasso') {
       this.clearSelection();
       this.gesture = { type: 'lasso', page, rect, pointerId: e.pointerId, pointerType: e.pointerType, points: [pt] };
+      this.startLasso(this.gesture);
     } else {
       const tool = this.tool === 'highlighter' ? 'highlighter' : 'pen';   // "shapes" writes like the pen
       const stroke = { id: uid(), tool, color: this.color,
@@ -211,9 +258,11 @@ export class InputMethods {
 
   pointerMove(e) {
     const g = this.gesture;
+    if (e.pointerType === 'pen' && e.buttons) this.penLast = performance.now();   // touching, not hovering
     if (!g) { this.hoverEraser(e); return; }
     if (e.pointerId !== g.pointerId) return;
     e.preventDefault();
+    if (g.type === 'pan') { this.movePan(e); return; }
     const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
     const samples = coalesced.length ? coalesced : [e];
     const points = samples.map((ev) => this.pagePoint(g.page, ev, g.rect));
@@ -227,7 +276,7 @@ export class InputMethods {
         const last = g.points[g.points.length - 1];
         if (Math.hypot(pt[0] - last[0], pt[1] - last[1]) >= GESTURE_POINT_DIST) g.points.push(pt);
       }
-      this.drawInk(g.page);
+      this.drawLasso(g);           // only the new points: the strokes are not drawn again
       return;
     }
     if (g.converted) return;   // already turned into a shape: it does not change while the pen stays down
@@ -262,15 +311,24 @@ export class InputMethods {
     this.drawLive(g);
   }
 
-  // Pen side button: to the eraser, and back to the tool used before.
-  togglePenEraser() {
-    if (this.tool === 'eraser') {
-      this.selectTool(this.toolBeforeEraser || 'pen');
-      this.toolBeforeEraser = null;
-    } else {
-      this.toolBeforeEraser = this.tool;
-      this.selectTool('eraser');
-    }
+  // --- hand: moving the sheet with the pen's side button (or the mouse wheel button) ---
+  startPan(e) {
+    this.hideEraserCursor();
+    this.gesture = { type: 'pan', pointerId: e.pointerId, pointerType: e.pointerType,
+      x: e.clientX, y: e.clientY, left: this.pagesEl.scrollLeft, top: this.pagesEl.scrollTop };
+    try { this.pagesEl.setPointerCapture(e.pointerId); } catch { /* the pan goes on anyway */ }
+    this.pagesEl.classList.add('panning');
+  }
+
+  movePan(e) {
+    const g = this.gesture;
+    this.pagesEl.scrollLeft = g.left - (e.clientX - g.x);
+    this.pagesEl.scrollTop = g.top - (e.clientY - g.y);
+  }
+
+  endPan() {
+    this.pagesEl.classList.remove('panning');
+    this.showNav();
   }
 
   // Tip a little ahead of the last sample, following the (smoothed) speed.
@@ -292,21 +350,24 @@ export class InputMethods {
 
   pointerUp(e) {
     const g = this.gesture;
+    if (e.pointerType === 'pen') { this.penLast = performance.now(); this.penDown = false; this.unlockScroll(); }
     if (!g || e.pointerId !== g.pointerId) return;
     this.gesture = null;
-    if (g.type === 'draw') {
+    if (g.type === 'pan') {
+      this.endPan();
+    } else if (g.type === 'draw') {
       clearTimeout(g.holdTimer);
       // The stroke ends exactly where the pen was lifted.
       const pts = g.stroke.points, last = pts[pts.length - 1], raw = g.lastRaw;
       if (!g.converted && raw && Math.hypot(raw[0] - last[0], raw[1] - last[1]) >= MIN_POINT_DIST) pts.push(raw);
       // It first becomes a "pending" stroke (visible until the controller confirms it),
-      // then the page is redrawn with the last piece: this way the stroke never disappears.
+      // then the last piece is drawn: this way the stroke never disappears.
       this.pendingStrokes.set(g.stroke.id, { page: g.page.id, stroke: g.stroke });
-      this.drawInk(g.page);
+      this.finishLive(g);
       this.endLive(g.page);
       this.finishStroke(g);
     } else if (g.type === 'lasso') {
-      this.drawInk(g.page);  // removes the dashed outline
+      this.endLasso(g);      // removes the dashed outline
       if (g.points.length >= 3) {
         const polygon = g.points.map(([x, y]) => [x, y]);
         this.send({ type: 'select', page: g.page.id, polygon }, { quiet: true });
@@ -349,7 +410,7 @@ export class InputMethods {
     const tolerance = SNAP_PX / this.scale;
     return this.enqueue(async (session) => {
       const result = await apiPost('/api/edit/op',
-        { session, op: { type: 'recognizeShape', page: g.page.id, points, tolerance } });
+        { session, op: { type: 'recognizeShape', page: g.page.id, points, tolerance } }, { timeout: OP_TIMEOUT_MS });
       shape = (result.events || []).find((ev) => ev.event === 'shape') || null;
       return result;
     }, { quiet: true }).then(() => shape);
@@ -372,10 +433,12 @@ export class InputMethods {
   // nothing to erase and the stroke would reappear).
   finishStroke(g) {
     const request = g.shapeTool && g.stroke.points.length >= 2 ? this.recognize(g) : g.holdRequest;
+    const seq = this.opSeq = (this.opSeq || 0) + 1;   // the same number if it is sent again (see send)
     this.enqueue(async (session) => {
       // The recognition was queued before this request: here it is already answered.
       if (request && !g.converted && this.applyShape(g, await request)) this.drawInk(g.page);
-      return apiPost('/api/edit/op', { session, op: { type: 'addStroke', page: g.page.id, stroke: g.stroke } });
+      return apiPost('/api/edit/op', { session, op: { type: 'addStroke', page: g.page.id, stroke: g.stroke, seq } },
+        { timeout: OP_TIMEOUT_MS });
     });
   }
 
@@ -419,6 +482,7 @@ export class InputMethods {
     const g = this.gesture;
     this.gesture = null;
     if (!g) return;
+    if (g.type === 'pan') { this.endPan(); return; }
     clearTimeout(g.holdTimer);
     if (g.type === 'erase') g.ids.forEach((id) => this.hiddenStrokes.delete(id));
     try {
@@ -433,9 +497,11 @@ export class InputMethods {
     const g = this.gesture;
     if (!g || g.pointerType !== 'touch') return;
     this.gesture = null;
+    if (g.type === 'pan') { this.endPan(); return; }
     clearTimeout(g.holdTimer);
     if (g.type === 'erase') g.ids.forEach((id) => this.hiddenStrokes.delete(id));
     if (g.type === 'draw') this.endLive(g.page);
+    if (g.type === 'lasso') this.endLasso(g);
     this.hideEraserCursor();
     this.drawInk(g.page);
   }

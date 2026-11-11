@@ -382,6 +382,27 @@ class UserFolder:
             old_pictures.rename(new_pictures)
             self._prune_empty(old_pictures.parent)
 
+    def move(self, rel: str, rel_target: str):
+        """Moves a document or a folder to another path (TapBook Sync: moved on
+        the computer); missing folders are created and the images follow it."""
+        src = self.resolve(rel)
+        dst = self.resolve(rel_target)
+        if self.is_root(src) or not src.exists() or is_link(src):
+            raise FileNotFoundError(rel)
+        if self.is_root(dst) or dst == src or src in dst.parents:
+            raise FileExistsError(rel_target)
+        if dst.exists() and not os.path.normcase(str(dst)) == os.path.normcase(str(src)):
+            raise FileExistsError(rel_target)
+        old_pictures = self.pictures_dir(rel)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+        if old_pictures.is_dir():
+            new_pictures = self.pictures_dir(self.rel(dst))
+            if not new_pictures.exists():
+                new_pictures.parent.mkdir(parents=True, exist_ok=True)
+                old_pictures.rename(new_pictures)
+                self._prune_empty(old_pictures.parent)
+
     def trash_pictures(self, rel_doc: str, stamp: str, keep: set | None = None):
         """Moves the document's images to the trash: all of them, or all except
         those whose names are in `keep` (i.e. still used in the PDF).

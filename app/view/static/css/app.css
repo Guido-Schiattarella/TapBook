@@ -365,14 +365,23 @@ mark { background: #fff0a8; color: inherit; border-radius: 4px; padding: 0 2px; 
 .pages {
   position: absolute; inset: 0; overflow-x: auto; overflow-y: scroll; padding: calc(var(--toolbar-h, 64px) + 18px) 14px 48px;
   background: #e9eff9;
-  -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
-  touch-action: pan-x pan-y;   /* pinch zoom is handled by the app, not by the browser */
+  overscroll-behavior: contain;
+  /* One finger: the browser's own scrolling (it runs apart from the page, so it
+     always answers at once). The browser never zooms the pages: pinch zoom is the
+     app's (editor/touch.js, zoom.js). */
+  touch-action: pan-x pan-y;
   overflow-anchor: none;       /* the position after zooming and adding pages is decided by the app */
+  scrollbar-gutter: stable;    /* stopping the scrolling during a pinch does not move the pages sideways */
 }
+/* Two fingers down: the browser's scrolling stops, only the app moves the sheet.
+   The Pencil writing: the sheet cannot scroll at all (see touch.js, lockScroll). */
+.pages.pinching, .pages.pen-down { overflow: hidden; }
 .pages-inner { width: max-content; min-width: 100%; will-change: transform; }
 .page {
   position: relative; margin: 0 auto 22px; background: #fff; border-radius: 3px;
-  box-shadow: 0 2px 6px rgba(31, 69, 140, .08), 0 10px 28px rgba(31, 69, 140, .10);
+  /* A small shadow: with strong zoom the pages are huge, and a wide blur along their
+     edges is costly to paint again while scrolling. */
+  box-shadow: 0 1px 4px rgba(31, 69, 140, .16);
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .page canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
@@ -390,14 +399,15 @@ mark { background: #fff0a8; color: inherit; border-radius: 4px; padding: 0 2px; 
   right: -10px; bottom: -10px; width: 20px; height: 20px; border-radius: 50%;
   background: var(--accent); border: 3px solid #fff; cursor: nwse-resize; touch-action: none; box-shadow: var(--shadow);
 }
-.pages.tool-image .images { pointer-events: auto; z-index: 3; }
+.pages.tool-image .images { z-index: 3; }
+.pages.tool-image .imagebox { pointer-events: auto; }
 .pages.tool-image .imagebox { outline: 2px dashed var(--accent-2); cursor: move; touch-action: none; }
 .pages.tool-image .imagebox .remove { display: inline-flex; }
 .pages.tool-image .imagebox .resize { display: block; }
 .pages.tool-image .page { cursor: copy; }
 .page .texts { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
 .pages.tool-text .page { cursor: text; }
-.pages.tool-text .texts { pointer-events: auto; }
+.pages.tool-text .textbox { pointer-events: auto; }
 .pages.tool-text .textbox.active { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
 .textbox { position: absolute; }
 .textbox textarea {
@@ -442,6 +452,9 @@ mark { background: #fff0a8; color: inherit; border-radius: 4px; padding: 0 2px; 
 
 /* Lasso */
 .pages.tool-lasso .page { cursor: crosshair; }
+/* Lasso outline being drawn (editor/render.js, startLasso): above the strokes. */
+.page svg.lasso { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; overflow: visible; }
+.page svg.lasso polyline { fill: none; stroke: #1e5bd8; stroke-width: 1.5; stroke-dasharray: 6 5; stroke-linejoin: round; }
 .selection {
   position: absolute; z-index: 4; border: 1.5px dashed var(--accent); border-radius: 8px;
   background: rgba(47, 108, 246, .05); cursor: move; touch-action: none;
@@ -472,7 +485,34 @@ mark { background: #fff0a8; color: inherit; border-radius: 4px; padding: 0 2px; 
   padding: 7px 14px; border-radius: 20px; box-shadow: 0 6px 18px rgba(16, 40, 100, .25);
   transition: opacity .2s, transform .2s; white-space: nowrap;
 }
-.nav-indicator.visible { opacity: 1; transform: translate(-50%, 0); }
+.nav-indicator.visible { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; cursor: pointer; }
+.nav-indicator { border: 0; min-height: 0; }
+.pages.panning, .pages.panning .page { cursor: grabbing; }
+
+/* Menu on the page (right click, long press) */
+.ctx-menu {
+  position: fixed; z-index: 13; display: flex; flex-direction: column; min-width: 150px; padding: 5px;
+  border-radius: 12px; background: #fff; box-shadow: var(--shadow-hover); user-select: none; -webkit-user-select: none;
+}
+.ctx-menu button { min-height: 38px; padding: 0 14px; font-size: 15px; border: 0; border-radius: 8px; text-align: left; background: transparent; }
+.ctx-menu button:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+.ctx-menu button.danger { color: var(--danger); }
+
+/* Page chooser */
+.page-dialog { width: min(760px, calc(100vw - 32px)); }
+.page-jump { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.page-jump input { width: 90px; font-size: 16px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); }
+.page-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;
+  max-height: min(60vh, 560px); overflow-y: auto; padding: 4px; -webkit-overflow-scrolling: touch;
+}
+.page-thumb {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 0;
+  border-radius: 12px; background: var(--surface-2); min-height: 0; color: var(--text-2); font-size: 13px; font-weight: 600;
+}
+.page-thumb canvas { display: block; background: #fff; border-radius: 3px; box-shadow: 0 1px 3px rgba(31, 69, 140, .18); }
+.page-thumb:hover { background: var(--accent-soft); }
+.page-thumb.current { box-shadow: 0 0 0 2px var(--accent); color: var(--accent); }
 
 /* Progress bar (import and opening) */
 .progress-overlay {

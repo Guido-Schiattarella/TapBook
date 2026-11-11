@@ -15,11 +15,11 @@
 //
 // The code is split by area in static/js/editor/: each module adds its methods
 // to EditorView (at the end of this file); shared.js holds shared constants and functions.
-import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { apiGetBinary, apiPost } from './api.js';
 import { getBackground, putBackground, dropBackground } from './bgcache.js';
-import { PDF_OPTIONS, COLORS, ERASER_DEFAULT, ERASER_PREF, LEAVE_WAIT_MS,
+import { ERASER_DEFAULT, ERASER_PREF, LEAVE_WAIT_MS,
   TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_PREF } from './editor/shared.js';
+import { Painter } from './editor/painter.js';
 import { SyncMethods } from './editor/sync.js';
 import { InputMethods } from './editor/input.js';
 import { PagesMethods } from './editor/pages.js';
@@ -30,6 +30,10 @@ import { ToolbarMethods } from './editor/toolbar.js';
 import { RenderMethods } from './editor/render.js';
 import { TextsMethods } from './editor/texts.js';
 import { WidthMethods } from './editor/widths.js';
+import { NavigationMethods } from './editor/navigation.js';
+import { ClipboardMethods } from './editor/clipboard.js';
+import { TouchMethods } from './editor/touch.js';
+import { MenuMethods } from './editor/menu.js';
 
 export class EditorView {
   constructor(app) {
@@ -47,11 +51,16 @@ export class EditorView {
     this.colorsEl = document.getElementById('colors');
     this.toolbarEl = document.getElementById('toolbar');
     this.imageInput = document.getElementById('image-input');
+    this.painter = new Painter();                         // draws the PDF backgrounds, in a worker when it can
     this.layoutBtn = document.getElementById('btn-layout');
     this.layoutDialog = document.getElementById('layout-dialog');
+    this.pageDialog = document.getElementById('page-dialog');
     this.selectionEl = this.buildSelectionEl();
-    this.navEl = document.createElement('div');          // page and zoom indicator
+    this.menuEl = this.buildMenuEl();                     // right click / long press (menu.js)
+    this.navEl = document.createElement('button');       // page and zoom indicator (tap: page chooser)
     this.navEl.className = 'nav-indicator';
+    this.navEl.type = 'button';
+    this.navEl.title = 'Scegli la pagina';
     this.element.append(this.navEl);
     this.eraserCursor = document.createElement('div');   // circle showing where the eraser erases
     this.eraserCursor.className = 'eraser-cursor';
@@ -59,8 +68,11 @@ export class EditorView {
     try { this.eraserRadius = Number(localStorage.getItem(ERASER_PREF)) || ERASER_DEFAULT; } catch { /* no storage available */ }
     // the user's choices (presentation)
     this.tool = 'pen';
-    this.color = COLORS[0];
+    this.loadColors();                                    // colour of each tool (toolbar.js)
     this.loadWidths();                                    // thickness of each tool (widths.js)
+    this.loadClipboard();                                 // what was copied (clipboard.js)
+    this.penLast = 0;                                     // when the Pencil last touched the page
+    this.toolBeforeEraser = null;
     this.textSize = this.storedNumber(TEXT_SIZE_PREF, TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
     this.fingerDraw = false;
     this.zoom = 1;
@@ -77,16 +89,26 @@ export class EditorView {
   }
 
   reset() {
+    this.openId = (this.openId || 0) + 1;   // a new document (or none): operations queued for the old one are dropped
     this.session = null;
     this.path = '';
     this.ready = false;
-    this.bgDocs = new Map();    // background id -> PDF (pdf.js), see loadBackgrounds
+    this.bgDocs = new Map();    // background id -> Promise<true> once the painter has it, see loadBackgrounds
     this.pages = [];            // display copy received from the controller
     this.els = new Map();       // page id -> DOM elements
     this.pendingStrokes = new Map();  // strokes sent, waiting for confirmation
     this.hiddenStrokes = new Set();   // strokes erased with the eraser, waiting for confirmation
     this.gesture = null;
     this.pinch = null;
+    this.finger = null;         // finger scrolling the sheet (touch.js)
+    this.pencilIds = new Set(); // touch identifiers that are the Pencil (touch.js)
+    this.penDown = false;       // the Pencil is touching the screen (input.js, touch.js)
+    this.scrollDir = null;      // last direction of the scrolling (render.js draws further that way)
+    this.deferredRenders = new Set();   // pages to draw once the sheet stops (render.js)
+    this.cancelLongPress?.();
+    this.longPressed = false;
+    this.hideMenu?.();
+    this.fitNewText = false;
     this.queue = Promise.resolve();   // operations leave one at a time, in order
     this.inFlight = 0;
     this.blocked = false;
@@ -96,10 +118,17 @@ export class EditorView {
     this.activeText = null;     // text box being edited: { page, id }
     this.layout = null;         // layout of the next pages (of the document)
     this.layouts = [];
-    this.layoutDocs?.forEach((p) => p.then((d) => d?.destroy()).catch(() => {}));
-    this.layoutDocs = new Map(); // backgrounds of new pages, per layout and size
+    this.layoutDocs?.forEach((_, key) => this.painter.close('layout:' + key));
+    this.layoutDocs = new Map(); // backgrounds of new pages, per layout and size -> Promise<painter key|null>
+    this.pasteCount = 0;        // pastes on the same page since the copy (each one shifted a little more)
+    this.position = null;       // last page/offset reported to the computer
+    this.startAt = null;
+    clearTimeout(this.positionTimer);
+    this.positionTimer = null;
     this.selectionEl?.remove();
     this.observer?.disconnect();
+    this.thumbObserver?.disconnect();
+    this.thumbObserver = null;
   }
 
   // =====================================================================
@@ -127,6 +156,7 @@ export class EditorView {
     this.showTool();
     this.showColor();
     this.showWidth();
+    this.showPaste();
     this.showTextSize(this.textSize);
     // Last part of the progress bar (if the opening is showing it): the backgrounds
     // (PDF without the notes) this device does not have yet, then the first page.
@@ -147,9 +177,11 @@ export class EditorView {
     this.ready = true;
     this.computeScale();
     this.buildPages();
-    // Opened from a search result: go to the matching page.
+    // Opened from a search result, or where the reader stopped last time: go there.
     const start = data.startPage != null && this.pages[data.startPage];
-    if (start) this.els.get(start.id).el.scrollIntoView({ block: 'start' });
+    if (start) this.goToPage(data.startPage, { offset: data.startOffset || 0 });
+    this.position = start ? { page: data.startPage, offset: data.startOffset || 0 } : null;
+    this.showPageButton();
     this.showStatus(data.status);
     this.listen(this.session);
   }
@@ -177,24 +209,24 @@ export class EditorView {
     }
   }
 
-  // pdf.js document of a background. If one taken from the cache cannot be read,
+  // Hands a background to the painter. If one taken from the cache cannot be read,
   // it is removed from the cache and downloaded again.
   openBackground(id, bytes, cached) {
-    const opening = pdfjsLib.getDocument({ data: bytes, ...PDF_OPTIONS }).promise;
+    const opening = this.painter.open('bg:' + id, bytes).then(() => true);
     if (!cached) return opening;
     return opening.catch(async () => {
       await dropBackground(this.app.user, id);
       const fresh = await apiGetBinary('/api/edit/background', { session: this.session, id });
       putBackground(this.app.user, id, fresh.slice());
-      return pdfjsLib.getDocument({ data: fresh, ...PDF_OPTIONS }).promise;
+      return this.painter.open('bg:' + id, fresh).then(() => true);
     });
   }
 
   // Backgrounds no longer used by any page (keep: ids still needed) are closed.
   destroyBackgrounds(keep = new Set()) {
-    for (const [id, doc] of this.bgDocs || []) {
+    for (const id of [...(this.bgDocs?.keys() || [])]) {
       if (keep.has(id)) continue;
-      doc.then((d) => d.destroy()).catch(() => {});
+      this.painter.close('bg:' + id);
       this.bgDocs.delete(id);
     }
   }
@@ -231,7 +263,9 @@ export class EditorView {
     if (!this.session) return;
     // The computer saves and answers with the view to show; if it does not answer
     // in time (or answers with an error), go back to the folder anyway.
-    const closing = this.app.request('/api/edit/close', { session: this.session }).then(() => true, () => false);
+    // Closing also tells where the reader stopped (see position in navigation.js).
+    const closing = this.app.request('/api/edit/close', { session: this.session, ...this.currentPosition() })
+      .then(() => true, () => false);
     const answered = await Promise.race([closing, new Promise((r) => setTimeout(() => r(false), 2 * LEAVE_WAIT_MS))]);
     if (!answered) {
       this.abandoned = true;
@@ -241,11 +275,12 @@ export class EditorView {
 
   closeOnExit() {
     if (!this.session) return;
+    clearTimeout(this.positionTimer);
     try {
       fetch('/api/edit/close', {
         method: 'POST', credentials: 'same-origin', keepalive: true,
         headers: { 'X-Requested-With': 'notes-app', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: this.session }),
+        body: JSON.stringify({ session: this.session, ...this.currentPosition() }),
       }).catch(() => {});
     } catch { /* leaving anyway */ }
   }
@@ -259,16 +294,17 @@ export class EditorView {
 
   // Leaving the editor for another view: never waits for ever.
   async close() {
+    clearTimeout(this.positionTimer);
     if (!this.abandoned) await this.queueDrained();
     this.abandoned = false;
     if (!this.session) return;
-    const closing = apiPost('/api/edit/close', { session: this.session }).catch(() => {});
+    const closing = apiPost('/api/edit/close', { session: this.session, ...this.currentPosition() }).catch(() => {});
     await Promise.race([closing, new Promise((r) => setTimeout(r, LEAVE_WAIT_MS))]);
   }
 }
 
 // Methods of the individual areas, added to the class as they are.
-for (const area of [SyncMethods, InputMethods, PagesMethods, SelectionMethods, ImagesMethods, ZoomMethods, ToolbarMethods, RenderMethods, TextsMethods, WidthMethods]) {
+for (const area of [SyncMethods, InputMethods, PagesMethods, SelectionMethods, ImagesMethods, ZoomMethods, ToolbarMethods, RenderMethods, TextsMethods, WidthMethods, NavigationMethods, ClipboardMethods, TouchMethods, MenuMethods]) {
   for (const name of Object.getOwnPropertyNames(area.prototype)) {
     if (name !== 'constructor') {
       Object.defineProperty(EditorView.prototype, name, Object.getOwnPropertyDescriptor(area.prototype, name));

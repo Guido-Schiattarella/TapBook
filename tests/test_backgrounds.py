@@ -38,26 +38,31 @@ def scenario(check, name, data):
     def open_():
         o = ed.open("anna", "doc.pdf"); return o, o["session"]
 
+    def close_(s):
+        # Closing writes the file in the background: the file is touched from
+        # outside only once the writing is over (as rename and delete do).
+        ed.close("anna", s); ed.is_open("anna", "doc.pdf", wait=20)
+
     def refs(o):
         return [p["bg"] for p in o["pages"]]
 
     o, sid = open_(); first = o["backgrounds"]; n = len(o["pages"])
     check(len(first) == 1 and all(r and r["id"] in first for r in refs(o)), f"{name}: first opening, one background")
-    ed.close("anna", sid); o, sid = open_()
+    close_(sid); o, sid = open_()
     check(o["backgrounds"] == first, f"{name}: reopened untouched: same background")
     pids = [p["id"] for p in o["pages"]]
     ed.apply("anna", sid, {"type": "addStroke", "page": pids[0], "stroke": {"id": "s1", "tool": "pen", "color": "#000000", "width": 1, "points": [[10, 10, .5], [60, 60, .5]]}})
     ed.apply("anna", sid, {"type": "addPage", "after": pids[0]})
     ed.apply("anna", sid, {"type": "removePage", "page": pids[2]})
-    ed.close("anna", sid); o, sid = open_()
+    close_(sid); o, sid = open_()
     check(o["backgrounds"] == first, f"{name}: strokes, page added and removed with the app: same background")
     check(o["pages"][1]["bg"] is None and o["pages"][1]["layout"], f"{name}: added page drawn from its layout")
     # pages moved: undo of a removal puts a page back elsewhere in the order
     ed.apply("anna", sid, {"type": "removePage", "page": o["pages"][-1]["id"]})
     ed.apply("anna", sid, {"type": "undo"})
-    ed.close("anna", sid); o, sid = open_()
+    close_(sid); o, sid = open_()
     check(o["backgrounds"] == first, f"{name}: still the same background")
-    ed.close("anna", sid)
+    close_(sid)
     d = pymupdf.open(path); d[3].insert_text((60, 60), "modificata fuori"); d.saveIncr(); d.close()
     o, sid = open_()
     new_ids = set(o["backgrounds"]) - set(first)
@@ -86,11 +91,11 @@ def scenario(check, name, data):
     room.timer and room.timer.cancel(); room.state = "pending"; ed._save(room)
     ev = [e for e in ed.clients[sid].outbox if e["event"] == "backgroundChanged"]
     check(ev and len(set(ev[-1]["backgrounds"]) - set(first) - {delta}) == 1, f"{name}: changed while open: one new background")
-    ed.close("anna", sid)
+    close_(sid)
     for k in range(8):
         d = pymupdf.open(path); d[k % n].insert_text((100, 100 + k * 10), f"giro {k}"); d.saveIncr(); d.close()
-        o, sid = open_(); ed.close("anna", sid)
-    o, sid = open_(); ed.close("anna", sid)
+        o, sid = open_(); close_(sid)
+    o, sid = open_(); close_(sid)
     check(len(o["backgrounds"]) <= backgrounds.MAX_BACKGROUNDS, f"{name}: backgrounds kept few ({len(o['backgrounds'])})")
     folder = tmp / "backgrounds" / "anna"
     files = sum(len(list(f.glob("*.pdf"))) for f in folder.iterdir())
@@ -107,7 +112,7 @@ def notebook(check):
     rel = lib.create_document("anna", "", "quaderno", "lined")
     o = ed.open("anna", rel); sid = o["session"]
     ed.apply("anna", sid, {"type": "addPage", "after": o["pages"][0]["id"]})
-    ed.close("anna", sid)
+    ed.close("anna", sid); ed.is_open("anna", rel, wait=20)
     o = ed.open("anna", rel)
     check(o["backgrounds"] == {} and all(p["bg"] is None for p in o["pages"]), "notebook made in TapBook: nothing to download")
     ed.close("anna", o["session"])

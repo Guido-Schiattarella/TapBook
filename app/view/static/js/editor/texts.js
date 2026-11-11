@@ -155,13 +155,21 @@ export class TextsMethods {
       this.showTextSize(this.textSize);
       this.send({ type: 'removeText', page: page.id, id: t.id });
     });
-    // Dragging by the handle: it moves here right away, the final position goes to the computer.
+    // Dragging by the handle: it moves here right away, the final position goes to
+    // the computer. Dropped on another page, the box moves to that page (otherwise
+    // it would stay on this one, drawn over the other, where it could no longer be tapped).
     this.dragTextHandle(handle, (start, dx, dy) => {
       t.x = start.x + dx;
       t.y = start.y + dy;
       this.placeTextbox(el, t);
-    }, (start) => {
-      if (t.x !== start.x || t.y !== start.y) this.send({ type: 'moveText', page: page.id, id: t.id, x: t.x, y: t.y });
+    }, (start, ev) => {
+      const target = this.dropPage(page, el, ev);
+      if (target) {
+        this.deactivateText();
+        this.send({ type: 'moveText', page: page.id, id: t.id, x: target.x, y: target.y, toPage: target.page.id });
+      } else if (t.x !== start.x || t.y !== start.y) {
+        this.send({ type: 'moveText', page: page.id, id: t.id, x: t.x, y: t.y });
+      }
     }, t);
     // Bottom-right corner: width and height. The height never goes below what the text needs.
     this.dragTextHandle(resize, (start, dx, dy) => {
@@ -175,6 +183,16 @@ export class TextsMethods {
     return el;
   }
 
+  // Page under the pointer when a box or an image is released, if it is another
+  // page: { page, x, y } with the item's top-left corner in that page's coordinates.
+  dropPage(page, el, ev) {
+    const target = ev && this.pageAt(ev.clientX, ev.clientY);
+    const v = target && target.id !== page.id && this.els.get(target.id);
+    if (!v) return null;
+    const r = el.getBoundingClientRect(), tr = v.el.getBoundingClientRect();
+    return { page: target, x: (r.left - tr.left) / this.scale, y: (r.top - tr.top) / this.scale };
+  }
+
   // Dragging one of the box's handles: move(start, dx, dy) while dragging (in PDF
   // points), done(start) when released.
   dragTextHandle(button, move, done, t) {
@@ -183,12 +201,13 @@ export class TextsMethods {
       e.stopPropagation();
       try { button.setPointerCapture(e.pointerId); } catch { /* ignored */ }
       const start = { cx: e.clientX, cy: e.clientY, x: t.x, y: t.y, w: t.w, h: t.h };
-      const onMove = (ev) => move(start, (ev.clientX - start.cx) / this.scale, (ev.clientY - start.cy) / this.scale);
+      let last = e;
+      const onMove = (ev) => { last = ev; move(start, (ev.clientX - start.cx) / this.scale, (ev.clientY - start.cy) / this.scale); };
       const onUp = () => {
         button.removeEventListener('pointermove', onMove);
         button.removeEventListener('pointerup', onUp);
         button.removeEventListener('pointercancel', onUp);
-        done(start);
+        done(start, last);
       };
       button.addEventListener('pointermove', onMove);
       button.addEventListener('pointerup', onUp);

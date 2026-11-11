@@ -3,6 +3,7 @@ import io
 
 from flask import abort, g, jsonify, request, send_file
 
+from ...control.errors import ControlError
 from ..http import api, body, controllers, view_response
 
 
@@ -64,7 +65,24 @@ def register(app):
         resp.headers["Cache-Control"] = "no-store"   # the editor keeps it itself (bgcache.js)
         return resp
 
+    @app.post("/api/edit/position")
+    @api
+    def api_edit_position():
+        """The page being read (and how far down it): the document opens there next time."""
+        data = body()
+        controllers().editing.set_position(g.username, data.get("session"), data.get("page"), data.get("offset", 0.0))
+        return jsonify({"ok": True})
+
     @app.post("/api/edit/close")
     @api
     def api_edit_close():
-        return view_response(controllers().navigation.leave_editor(g.username, body().get("session")))
+        """Leaving the editor. The view also says where the reader stopped (page and
+        offset), remembered before closing: a separate request could arrive after
+        the session is gone."""
+        data = body()
+        if data.get("page") is not None:
+            try:
+                controllers().editing.set_position(g.username, data.get("session"), data.get("page"), data.get("offset", 0.0))
+            except ControlError:
+                pass                       # a bad position never prevents closing (and saving)
+        return view_response(controllers().navigation.leave_editor(g.username, data.get("session")))

@@ -1,7 +1,15 @@
 ﻿# TapBook — installation on Windows.
 #
 #   Right-click "Install TapBook.cmd" > Run as administrator
-#   (or: powershell -ExecutionPolicy Bypass -File install.ps1)
+#   (or: powershell -ExecutionPolicy Bypass -File install.ps1 [-Mode server|client] [-Action update|fresh])
+#
+# It asks what to install:
+#   * TapBook Server: the notes app used from the iPad's browser, with its control panel;
+#   * TapBook Sync: keeps a folder of this computer aligned with a TapBook Server
+#     (on a VPS or on another computer).
+# If it is already installed, it asks whether to update it (settings untouched, no
+# questions) or to install it from scratch (all the questions again: the old
+# settings are kept as a backup; documents and accounts stay where they are).
 #
 # 1. looks for Python 3.10+ with Tk; if missing, installs it (winget, or the
 #    official python.org installer, whose signature is checked);
@@ -17,13 +25,17 @@
 # and documents in %USERPROFILE%\Note: running the installation again updates the
 # app without touching them.
 
+param(
+    [ValidateSet('', 'server', 'client')][string]$Mode = '',
+    [ValidateSet('', 'update', 'fresh')][string]$Action = ''
+)
+
 # External programs (python, pip, winget) are checked through $LASTEXITCODE: with 'Stop'
 # PowerShell 5 would treat even a plain warning printed by pip as an error.
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $Src = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$Dest = Join-Path $env:LOCALAPPDATA 'Programs\TapBook'
-$Log = Join-Path $Dest 'install.log'
+$Log = Join-Path $env:TEMP 'tapbook-install.log'          # until the installation folder exists
 $PythonInstaller = 'https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe'
 
 # --- progress bar and log ---------------------------------------------------------------
@@ -39,6 +51,17 @@ function Progress($pct, $text) {
     Write-Host (" {0,3}%  {1}" -f $pct, $text)
     Write-Log ""
     Write-Log "== $text ($pct%)"
+}
+# Asks a question with two answers; returns 1 or 2.
+function Choose([string]$Question, [string]$One, [string]$Two) {
+    Write-Host ""
+    Write-Host "  $Question" -ForegroundColor White
+    Write-Host "    1) $One"
+    Write-Host "    2) $Two"
+    while ($true) {
+        $answer = Read-Host '  Choice [1/2]'
+        if ($answer -eq '1' -or $answer -eq '2') { return [int]$answer }
+    }
 }
 function Info($text) { Write-Host "      $text" -ForegroundColor DarkGray; Write-Log $text }
 function Fail($text) {
@@ -71,15 +94,47 @@ $Version = (Select-String -Path (Join-Path $Src 'app\__init__.py') -Pattern '^__
 Write-Host ""
 Write-Host "  TapBook $Version - installation" -ForegroundColor Blue
 
-# Update: the app must not be running while its files are being replaced.
+# --- what to install --------------------------------------------------------------------
+if (-not $Mode) {
+    $choice = Choose 'What do you want to install?' `
+        "TapBook Server - the notes app, used from the iPad's browser" `
+        'TapBook Sync - keeps a folder of this computer aligned with a TapBook Server'
+    $Mode = @('server', 'client')[$choice - 1]
+}
+if ($Mode -eq 'server') {
+    $AppName = 'TapBook Server'; $Dest = Join-Path $env:LOCALAPPDATA 'Programs\TapBook'
+} else {
+    $AppName = 'TapBook Sync'; $Dest = Join-Path $env:LOCALAPPDATA 'Programs\TapBook Sync'
+}
+$Existing = Test-Path "$Dest\app"
+if (-not $Existing) { $Action = 'fresh' }
+if (-not $Action) {
+    $choice = Choose "$AppName is already installed. What do you want to do?" `
+        'Update it - settings untouched, no questions' `
+        'Install it from scratch - all the settings again (the old ones are kept as a backup; documents and accounts stay)'
+    $Action = @('update', 'fresh')[$choice - 1]
+}
+$Registration = 'open'
+if ($Mode -eq 'server' -and $Action -eq 'fresh') {
+    $choice = Choose 'Who can create an account?' `
+        'Anyone who reaches the server, from the login page' `
+        'Only you, from this computer with "tapbook user add" (recommended on the Internet)'
+    $Registration = @('open', 'closed')[$choice - 1]
+}
+
+# Update: the app must not be running while its files are being replaced
+# ("$Dest\*": TapBook Sync lives in "TapBook Sync", next to "TapBook").
 $running = Get-CimInstance Win32_Process -Filter "Name like 'python%'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -like "*-m app*" -and $_.ExecutablePath -like "$Dest*" }
-if ($running) {
-    Write-Host "  Error: TapBook is open: close its window (or stop the server) and run the installation again." -ForegroundColor Red
+    Where-Object { $_.CommandLine -like "*-m app*" -and $_.ExecutablePath -like "$Dest\*" }
+if ($running -and $Mode -eq 'server') {
+    Write-Host "  Error: TapBook Server is open: close its window (or stop the server) and run the installation again." -ForegroundColor Red
     exit 1
 }
+# TapBook Sync is stopped (it resumes where it stopped) and started again by the window or at the next login.
+$running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force -Path $Dest -ErrorAction Stop | Out-Null
-Set-Content -Path $Log -Value "TapBook $Version installation, $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -Encoding UTF8
+$Log = Join-Path $Dest 'install.log'
+Set-Content -Path $Log -Value "$AppName $Version installation ($Action), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -Encoding UTF8
 
 # --- 0. administrator ------------------------------------------------------------------
 # The installer is started with "Run as administrator": it confirms the installation
@@ -180,9 +235,31 @@ if (Test-Path "$Dest\app") { Remove-Item -Recurse -Force "$Dest\app" }       # u
 Copy-Item -Recurse (Join-Path $Src 'app') "$Dest\app" -ErrorAction Stop
 Get-ChildItem "$Dest\app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 Copy-Item (Join-Path $Src 'requirements.txt'), (Join-Path $Src 'config.example.ini') $Dest -Force
-if ((Test-Path (Join-Path $Src 'config.ini')) -and -not (Test-Path "$Dest\config.ini")) {
-    Copy-Item (Join-Path $Src 'config.ini') $Dest
-    Info 'Settings (config.ini) copied.'
+$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+if ($Mode -eq 'server' -and $Action -eq 'fresh') {
+    if (Test-Path "$Dest\config.ini") {
+        Move-Item "$Dest\config.ini" "$Dest\config.ini.bak-$Stamp" -Force
+        Info "Previous settings kept as config.ini.bak-$Stamp"
+    }
+    $flag = if ($Registration -eq 'closed') { 'false' } else { 'true' }
+    $lines = Get-Content "$Dest\config.example.ini" -Encoding UTF8 | Select-Object -Skip 3
+    $lines = @('; TapBook Server settings, written by the installer. Every value is explained in',
+               '; config.example.ini; after a change restart TapBook.') +
+             ($lines | ForEach-Object { $_ -replace '^allow_registration = .*', "allow_registration = $flag" })
+    [IO.File]::WriteAllLines("$Dest\config.ini", [string[]]$lines, (New-Object Text.UTF8Encoding $false))
+    Info "Settings written: $Dest\config.ini (sign-up: $(if ($flag -eq 'true') { 'from the login page' } else { 'from this computer only' }))"
+} elseif ($Mode -eq 'server') {
+    if ((Test-Path (Join-Path $Src 'config.ini')) -and -not (Test-Path "$Dest\config.ini")) {
+        Copy-Item (Join-Path $Src 'config.ini') $Dest
+        Info 'Settings (config.ini) copied.'
+    }
+    Info 'Settings untouched (update).'
+} elseif ($Action -eq 'fresh') {
+    $SyncSettings = Join-Path $env:APPDATA 'TapBook Sync'
+    if (Test-Path $SyncSettings) {
+        Rename-Item $SyncSettings "TapBook Sync.bak-$Stamp"
+        Info "Previous settings kept as $SyncSettings.bak-$Stamp (the synchronised folder is untouched)."
+    }
 }
 Copy-Item (Join-Path $PSScriptRoot 'uninstall.ps1') $Dest -Force
 # Files extracted from a downloaded archive carry the "from the Internet" mark: the
@@ -203,11 +280,15 @@ if (Test-Path $VenvPy) {
 }
 $PipShow = '^(Collecting|Downloading|Installing|Successfully|Requirement already satisfied: \S+==|ERROR|error)'
 $Pip = @('-m', 'pip', 'install', '--disable-pip-version-check', '--progress-bar', 'off')
-$code = Invoke-Logged $PipShow $VenvPy ($Pip + @('--upgrade', 'pip'))
-if ($code) { Fail 'pip could not be updated (an Internet connection is required).' }
-
-# One library at a time: the bar moves forward with each of them.
-$Packages = @(Get-Content "$Dest\requirements.txt" | ForEach-Object { ($_ -replace '#.*', '').Trim() } | Where-Object { $_ })
+$Packages = @()
+if ($Mode -eq 'server') {
+    $code = Invoke-Logged $PipShow $VenvPy ($Pip + @('--upgrade', 'pip'))
+    if ($code) { Fail 'pip could not be updated (an Internet connection is required).' }
+    # One library at a time: the bar moves forward with each of them.
+    $Packages = @(Get-Content "$Dest\requirements.txt" | ForEach-Object { ($_ -replace '#.*', '').Trim() } | Where-Object { $_ })
+} else {
+    Info "TapBook Sync uses only Python's standard library: nothing to download."
+}
 for ($i = 0; $i -lt $Packages.Count; $i++) {
     $pkg = $Packages[$i]
     $name = ($pkg -split '==')[0]
@@ -217,51 +298,100 @@ for ($i = 0; $i -lt $Packages.Count; $i++) {
 }
 
 # --- 4. startup check -------------------------------------------------------------------
-Progress 80 'Checking that TapBook starts'
+Progress 80 "Checking that $AppName starts"
 Push-Location $Dest
 Invoke-Logged '^Error' $VenvPy @('-m', 'compileall', '-q', "$Dest\app") | Out-Null     # faster first start
-$code = Invoke-Logged '.' $VenvPy @('-c', 'import app, flask, cheroot, pymupdf, PIL, cryptography, tkinter')
-if ($code) { Pop-Location; Fail 'the libraries were not installed correctly.' }
-Info 'Libraries loaded correctly.'
-$code = Invoke-Logged '.' $VenvPy @('-m', 'app', 'desktop', '--check')
+if ($Mode -eq 'server') {
+    $code = Invoke-Logged '.' $VenvPy @('-c', 'import app, flask, cheroot, pymupdf, PIL, cryptography, tkinter')
+    if ($code) { Pop-Location; Fail 'the libraries were not installed correctly.' }
+    Info 'Libraries loaded correctly.'
+    $code = Invoke-Logged '.' $VenvPy @('-m', 'app', 'desktop', '--check')
+} else {
+    $code = Invoke-Logged '.' $VenvPy @('-m', 'app.syncclient', 'window', '--check')
+}
 Pop-Location
-if ($code) { Fail 'the TapBook window does not start (details in the log).' }
-Info 'The control panel opens correctly.'
+if ($code) { Fail "the $AppName window does not start (details in the log)." }
+Info 'The window opens correctly.'
 
 # --- 5. shortcuts and uninstall entry --------------------------------------------------
 Progress 90 'Creating the Start menu and desktop shortcuts'
 $Icon = "$Dest\app\view\static\img\tapbook.ico"
 $Shell = New-Object -ComObject WScript.Shell
-$StartMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\TapBook.lnk'
-$Desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'TapBook.lnk'
-foreach ($path in @($StartMenu, $Desktop)) {
+$Programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+$DesktopDir = [Environment]::GetFolderPath('Desktop')
+if ($Mode -eq 'server') {
+    # Earlier versions called the shortcuts just "TapBook".
+    Remove-Item (Join-Path $Programs 'TapBook.lnk'), (Join-Path $DesktopDir 'TapBook.lnk') -ErrorAction SilentlyContinue
+    $Arguments = '-m app desktop'; $Description = 'TapBook Server: start and stop the notes server'
+    $Key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TapBook'
+    $Uninstall = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Dest\uninstall.ps1`""
+    # The "tapbook" command for the terminal (tapbook user add <name>, tapbook status...).
+    Set-Content -Path "$Dest\tapbook.cmd" -Encoding ASCII -Value @(
+        '@echo off', 'rem TapBook Server from the terminal: tapbook user add <name>, tapbook status, tapbook --help',
+        'pushd "%~dp0"', '".venv\Scripts\python.exe" -m app %*', 'set code=%errorlevel%', 'popd', 'exit /b %code%')
+} else {
+    $Arguments = '-m app.syncclient'; $Description = 'TapBook Sync: keep a folder aligned with TapBook Server'
+    $Key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TapBook Sync'
+    $Uninstall = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Dest\uninstall.ps1`" -Client"
+}
+foreach ($path in @((Join-Path $Programs "$AppName.lnk"), (Join-Path $DesktopDir "$AppName.lnk"))) {
     $lnk = $Shell.CreateShortcut($path)
     $lnk.TargetPath = "$Dest\.venv\Scripts\pythonw.exe"       # pythonw: no black console window
-    $lnk.Arguments = '-m app desktop'
+    $lnk.Arguments = $Arguments
     $lnk.WorkingDirectory = $Dest
     $lnk.IconLocation = "$Icon,0"
-    $lnk.Description = 'TapBook: start and stop the notes server'
+    $lnk.Description = $Description
     $lnk.Save()
     Info "Shortcut: $path"
 }
-$Key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TapBook'
 New-Item -Path $Key -Force | Out-Null
 $size = [int]((Get-ChildItem $Dest -Recurse -File | Measure-Object Length -Sum).Sum / 1KB)
 $values = @{
-    DisplayName = 'TapBook'; DisplayVersion = $Version; Publisher = 'TapBook'; DisplayIcon = $Icon
+    DisplayName = $AppName; DisplayVersion = $Version; Publisher = 'TapBook'; DisplayIcon = $Icon
     InstallLocation = $Dest; EstimatedSize = $size; NoModify = 1; NoRepair = 1
-    UninstallString = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Dest\uninstall.ps1`""
+    UninstallString = $Uninstall
 }
-foreach ($name in $values.Keys) {
-    $type = if ($values[$name] -is [int]) { 'DWord' } else { 'String' }
-    New-ItemProperty -Path $Key -Name $name -Value $values[$name] -PropertyType $type -Force | Out-Null
+foreach ($valueName in $values.Keys) {
+    $type = if ($values[$valueName] -is [int]) { 'DWord' } else { 'String' }
+    New-ItemProperty -Path $Key -Name $valueName -Value $values[$valueName] -PropertyType $type -Force | Out-Null
 }
 Info 'Entry added to Settings > Apps > Installed apps.'
 
+if ($Mode -eq 'client') {
+    # At every login (a small script in the Startup folder). Not started now: this
+    # window runs as administrator, the service must run with the user's own rights.
+    Push-Location $Dest
+    $code = Invoke-Logged '.' $VenvPy @('-m', 'app.syncclient', 'autostart', '--no-start')
+    Pop-Location
+    if ($code) { Info 'Automatic start not set: open TapBook Sync once.' } else { Info 'TapBook Sync starts at every login.' }
+}
+
+# First account, when sign-up is closed and there is none yet
+if ($Mode -eq 'server' -and $Action -eq 'fresh' -and $Registration -eq 'closed') {
+    Push-Location $Dest
+    $users = & $VenvPy -m app user list 2>&1 | Out-String
+    if ($users -match 'Nessun utente') {
+        Write-Host ""
+        Write-Host '  Create your account (sign-up from the web is closed)' -ForegroundColor White
+        do {
+            $firstUser = Read-Host '      Username'
+            & $VenvPy -m app user add $firstUser
+        } while ($LASTEXITCODE -ne 0)
+    } else {
+        Info 'Accounts already present: kept.'
+    }
+    Pop-Location
+}
+
 Progress 100 'Done'
 Write-Host ""
-Write-Host "  TapBook is installed." -ForegroundColor Blue
-Write-Host "  Open it from the Start menu or the desktop icon. Documents: the Note folder in the home folder."
-Write-Host "  To uninstall it: Settings > Apps > Installed apps > TapBook."
+Write-Host "  $AppName is installed." -ForegroundColor Blue
+if ($Mode -eq 'server') {
+    Write-Host "  Open it from the Start menu or the desktop icon. Documents: the Note folder in the home folder."
+    Write-Host "  Accounts from the terminal: `"$Dest\tapbook.cmd`" user add <name>"
+} else {
+    Write-Host "  Open TapBook Sync from the Start menu or the desktop icon, connect the server and choose the folder."
+}
+Write-Host "  To uninstall it: Settings > Apps > Installed apps > $AppName."
 Write-Host "  Installation log: $Log"
 Write-Host ""

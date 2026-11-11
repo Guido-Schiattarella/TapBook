@@ -4,6 +4,7 @@
   <h1>Bentornato!</h1>
   <p class="muted">Accedi per aprire i tuoi documenti</p>
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  {% if no_users %}<p class="error" role="status">Non ci sono ancora account. La registrazione dal web è disattivata: crea il primo account sul server con il comando <code>tapbook user add &lt;nome&gt;</code>.</p>{% endif %}
   <form method="post" autocomplete="on" class="form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Nome utente

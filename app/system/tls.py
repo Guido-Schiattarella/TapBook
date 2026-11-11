@@ -16,6 +16,8 @@ import ipaddress
 import os
 import re
 import socket
+import threading
+import time
 from pathlib import Path
 
 from cheroot import errors
@@ -147,12 +149,57 @@ _PATH_RE = re.compile(r"^/[\x21-\x7e]*$")  # visible characters only, no line br
 REDIRECTED = "richiesta http:// reindirizzata a https://"
 
 
+def own_certificate(cert: Path, key: Path) -> dict:
+    """An own certificate (tls_cert / tls_key in config.ini), checked before
+    starting: a clear message instead of an SSL error."""
+    import ssl
+    for label, path in (("tls_cert", cert), ("tls_key", key)):
+        if path is None:
+            raise ValueError("tls_cert e tls_key vanno indicati insieme in config.ini.")
+        if not path.is_file() or not os.access(path, os.R_OK):
+            raise ValueError(f"{label}: il file {path} non esiste o non è leggibile dall'utente che avvia TapBook.")
+    try:
+        ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(str(cert), str(key))
+    except (ssl.SSLError, OSError) as e:
+        raise ValueError(f"tls_cert / tls_key non validi o non corrispondenti: {e}") from None
+    return {"cert": cert, "key": key}
+
+
 class RedirectingSSLAdapter(BuiltinSSLAdapter):
+    RELOAD_CHECK = 60       # seconds between checks for a renewed certificate
+
     def __init__(self, certificate, private_key, port):
         super().__init__(certificate, private_key)
         self.port = port
+        self._files = (certificate, private_key)
+        self._stamp = self._mtimes()
+        self._checked = time.monotonic()
+        self._reload_lock = threading.Lock()
+
+    def _mtimes(self):
+        try:
+            return tuple(os.stat(f).st_mtime_ns for f in self._files)
+        except OSError:
+            return None
+
+    def _reload_if_renewed(self):
+        """A certificate renewed on disk (Let's Encrypt every two months, or the
+        app's own when the address changes) is used without restarting the server."""
+        if time.monotonic() - self._checked < self.RELOAD_CHECK:
+            return
+        with self._reload_lock:
+            self._checked = time.monotonic()
+            stamp = self._mtimes()
+            if stamp is None or stamp == self._stamp:
+                return
+            try:
+                self.context.load_cert_chain(*self._files)
+                self._stamp = stamp
+            except Exception:
+                pass        # half-written files: retried at the next check
 
     def wrap(self, sock):
+        self._reload_if_renewed()
         try:
             sock.settimeout(10)
             first = sock.recv(1, socket.MSG_PEEK)

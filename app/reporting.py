@@ -17,11 +17,16 @@ class TerminalReporter:
         print(f"  Cartella documenti: {info['notes_root']}")
         print(f"  Registrazione dal web: {'attiva' if info['registration'] else 'disattivata'}")
         if info["first_user"]:
-            print("  Nessun utente ancora: apri l'indirizzo qui sotto e crea il primo account.")
+            print("  Nessun utente ancora: " + ("apri l'indirizzo qui sotto e crea il primo account."
+                                                if info["registration"] else "crealo con  tapbook user add <nome>"))
         print(f"  Su questo computer:  {info['local_url']}")
         for url in info["ipad_urls"]:
             print(f"  Dall'iPad (stessa rete Wi-Fi):  {url}")
-        if info["https"]:
+        if info.get("behind_proxy"):
+            print("  Dietro un proxy (behind_proxy = true): dall'esterno usa l'indirizzo gestito dal proxy.")
+        elif info["https"] and info.get("own_certificate"):
+            print("  Connessione cifrata (HTTPS) con il certificato indicato in config.ini.")
+        elif info["https"]:
             print("  Connessione cifrata (HTTPS). Su ogni iPad, la prima volta: apri l'indirizzo,")
             print("  conferma l'avviso di Safari e tocca «Installa il certificato» nella pagina di accesso.")
 

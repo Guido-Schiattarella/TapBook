@@ -30,6 +30,16 @@ CREATE TABLE IF NOT EXISTS users (
     failed_attempts INTEGER NOT NULL DEFAULT 0,
     locked_until    TEXT
 );
+-- Computers paired with TapBook Sync: only the SHA-256 of their token is kept
+-- (a copy of the database does not let anybody act as the device).
+CREATE TABLE IF NOT EXISTS devices (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT    NOT NULL CHECK (length(name) BETWEEN 1 AND 64),
+    token_hash  TEXT    NOT NULL UNIQUE CHECK (length(token_hash) = 64),
+    created_at  TEXT    NOT NULL,
+    last_seen   TEXT
+);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -162,6 +172,41 @@ class UserStore:
     def record_success(self, user_id):
         self._query("UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login = ? "
                     "WHERE id = ?", (_now(), user_id))
+
+    # --- devices (TapBook Sync) -----------------------------------------------------
+    def add_device(self, user_id, name, token_hash):
+        self._query("INSERT INTO devices (user_id, name, token_hash, created_at) VALUES (?, ?, ?, ?)",
+                    (user_id, name, token_hash, _now()))
+
+    def device_by_token(self, token_hash):
+        """The device and its user (id, username, device_id, name), or None."""
+        return self._query("SELECT d.id AS device_id, d.name, d.last_seen, u.id, u.username FROM devices d "
+                           "JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?", (token_hash,), one=True)
+
+    def touch_device(self, device_id):
+        self._query("UPDATE devices SET last_seen = ? WHERE id = ?", (_now(), device_id))
+
+    def list_devices(self, username=None):
+        sql = ("SELECT d.id, d.name, d.created_at, d.last_seen, u.username FROM devices d "
+               "JOIN users u ON u.id = d.user_id")
+        rows = self._query(sql + " WHERE u.username = ? ORDER BY d.id", (username,)) if username \
+            else self._query(sql + " ORDER BY u.username, d.id")
+        return [dict(r) for r in rows]
+
+    def delete_device(self, device_id, username=None) -> bool:
+        conn = self.connect()
+        try:
+            if username is None:
+                cur = conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+            else:
+                cur = conn.execute("DELETE FROM devices WHERE id = ? AND user_id = "
+                                   "(SELECT id FROM users WHERE username = ?)", (device_id, username))
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def delete_devices(self, username):
+        self._query("DELETE FROM devices WHERE user_id = (SELECT id FROM users WHERE username = ?)", (username,))
 
     # --- migration from the old MariaDB database -----------------------------------
     def migrated(self) -> bool:

@@ -34,7 +34,7 @@ from pathlib import Path
 import pymupdf
 
 from . import layouts
-from .files import replace
+from .files import atomic_write, replace
 
 LAYER_FILE = "notes-app-layer.json"
 PAGE_ID_KEY = "NotesAppPageId"   # key in every page dictionary holding its id
@@ -44,6 +44,14 @@ DOC_CREATED_KEY = "NotesAppCreated" # creation (or import) date of the note
 COLOR_ID_RE = re.compile(r"^[a-z]{1,20}$")
 SUBJECT_PREFIX = "notes-app:"
 LAYER_VERSION = 1
+# Every annotation of the app carries its own editable data (points with the
+# pressure, shape, font size…) in this key of its PDF dictionary, as a hex
+# string of JSON. Saving can then add, change or remove single annotations
+# (incremental save) without rewriting the embedded layer file: that file is
+# refreshed only by full saves, and only completes items that have no data of
+# their own (files written by earlier versions).
+DATA_KEY = "TBData"
+INCREMENTAL_LIMIT = 25        # incremental saves in a row before a full one (keeps the file compact)
 A4 = (595.0, 842.0)
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -68,6 +76,10 @@ def file_lock(path: Path) -> threading.Lock:
 
 class RevisionMismatch(Exception):
     """The file on disk is no longer at the given revision (conditional save failed)."""
+
+
+class NeedsFullSave(Exception):
+    """An incremental save is not possible for this change: the whole file is written."""
 
 
 def revision_of(path: Path) -> str:
@@ -217,6 +229,22 @@ def _text_style(st):
     return (size or 14.0), (color.lower() if isinstance(color, str) and HEX_COLOR_RE.match(color) else "#000000")
 
 
+def _annot_data_set(doc: pymupdf.Document, xref: int, item: dict):
+    data = {k: v for k, v in item.items() if k != "id"}
+    doc.xref_set_key(xref, DATA_KEY, "<" + json.dumps(data, separators=(",", ":")).encode("utf-8").hex() + ">")
+
+
+def _annot_data_get(doc: pymupdf.Document, xref: int):
+    try:
+        kind, value = doc.xref_get_key(xref, DATA_KEY)
+        if kind != "string":
+            return None
+        data = json.loads(value)
+        return data if isinstance(data, dict) else None
+    except (ValueError, RuntimeError):
+        return None
+
+
 def _page_layer(page: pymupdf.Page, page_id, known: dict, layout=None, seen=None) -> dict:
     """Rebuilds a page's layer from the app annotations that are REALLY on that
     page. The embedded JSON (known) only enriches them (pressure, font size,
@@ -233,7 +261,11 @@ def _page_layer(page: pymupdf.Page, page_id, known: dict, layout=None, seen=None
             item_id = uuid.uuid4().hex[:16]      # invalid or repeated id: a new one is created
         if seen is not None:
             seen.add(item_id)
-        stored = known.get(item_id)
+        # The annotation's own data first; the embedded layer file (earlier versions,
+        # or stale after incremental saves) only for annotations without it.
+        stored = _annot_data_get(page.parent, annot.xref)
+        if stored is None:
+            stored = known.get(item_id)
         if not isinstance(stored, dict):
             stored = None
         if annot.type[0] == pymupdf.PDF_ANNOT_INK:
@@ -300,10 +332,74 @@ def _set_page_layout(doc: pymupdf.Document, page: pymupdf.Page, layout):
         doc.xref_set_key(page.xref, PAGE_LAYOUT_KEY, "/" + layout)
 
 
-def load_document(path: Path):
-    """Returns (clean_pdf_bytes, layer, revision) to send to the editor."""
+# --- Layer cache ------------------------------------------------------------------
+# Reading the notes back from a PDF means going through every annotation (slow:
+# seconds for a document with thousands of strokes). The notes of a file the app
+# has just read or written are kept here, named after the file's revision (the
+# SHA-256 of its content): opening the same file again, from any name or folder,
+# skips the reading. A file changed by another program has a new revision and is
+# read in full. Old entries go after LAYER_CACHE_DAYS.
+LAYER_CACHE_DIR = "layers"
+LAYER_CACHE_DAYS = 30
+
+
+def _layer_cache_file(pagecache: Path, rev: str) -> Path:
+    return pagecache / LAYER_CACHE_DIR / f"{rev}.json"
+
+
+def remember_layer(pagecache: Path | None, rev: str, layer: dict):
+    if pagecache is None:
+        return
+    try:
+        folder = pagecache / LAYER_CACHE_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        atomic_write(_layer_cache_file(pagecache, rev), json.dumps(layer, separators=(",", ":")).encode("utf-8"), fsync=False)
+        limit = time.time() - LAYER_CACHE_DAYS * 86400
+        for f in folder.glob("*.json"):
+            if f.stat().st_mtime < limit:
+                f.unlink(missing_ok=True)
+    except OSError:
+        pass                                   # a cache only: the file is read in full next time
+
+
+def cached_layer(pagecache: Path | None, rev: str):
+    if pagecache is None:
+        return None
+    try:
+        layer = json.loads(_layer_cache_file(pagecache, rev).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(layer, dict) or layer.get("version") != LAYER_VERSION \
+            or not isinstance(layer.get("pages"), list) or not isinstance(layer.get("docId"), str) \
+            or not ID_RE.match(layer["docId"]) or not layouts.exists(layer.get("nextLayout")):
+        return None
+    for i, p in enumerate(layer["pages"]):
+        if not isinstance(p, dict) or p.get("src") != i or not isinstance(p.get("id"), str) \
+                or not all(isinstance(p.get(k), list) for k in ("strokes", "texts", "images")):
+            return None
+    return layer
+
+
+def clean_bytes(path: Path) -> bytes:
+    """The PDF without the app's notes (for the backgrounds), read from the file."""
+    with file_lock(path):
+        doc = pymupdf.open(path)
+        try:
+            _strip_app_content(doc)
+            return doc.tobytes(garbage=1, deflate=True)
+        finally:
+            doc.close()
+
+
+def load_document(path: Path, pagecache: Path | None = None):
+    """Returns (clean_pdf_bytes, layer, revision) to send to the editor. With a
+    `pagecache`, a file the app already read or wrote is answered from the layer
+    cache: then clean_pdf_bytes is None (see clean_bytes when they are needed)."""
     with file_lock(path):
         rev = revision_of(path)
+        layer = cached_layer(pagecache, rev)
+        if layer is not None:
+            return None, layer, rev
         doc = pymupdf.open(path)
         try:
             stored = _read_layer(doc)
@@ -349,8 +445,12 @@ def load_document(path: Path):
     # A PDF never saved by the app has no id yet: it is derived from the file's
     # content, so it is the same at every opening (the stored backgrounds and the
     # devices' caches find it again) and is written into the file at the first save.
-    return clean, {"version": LAYER_VERSION, "docId": doc_id or hashlib.sha256(rev.encode()).hexdigest()[:32],
-                   "nextLayout": next_layout, "pages": pages}, rev
+    # app: the file was written by TapBook (it has its id, page ids and layer file),
+    # so the next save can be incremental; otherwise the first save writes it whole.
+    layer = {"version": LAYER_VERSION, "docId": doc_id or hashlib.sha256(rev.encode()).hexdigest()[:32],
+             "nextLayout": next_layout, "pages": pages, "app": doc_id is not None}
+    remember_layer(pagecache, rev, layer)
+    return clean, layer, rev
 
 
 # --- Writing ---------------------------------------------------------------
@@ -445,6 +545,7 @@ def _add_annotations(page: pymupdf.Page, pdata: dict, pictures_dir: Path | None)
         annot = page.add_stamp_annot(rect, stamp=picture.read_bytes())
         annot.set_info(subject=SUBJECT_PREFIX + img["id"], title="notes-app")
         annot.update()
+        _annot_data_set(page.parent, annot.xref, img)
     ink = _InkWriter(page, m)
     for s in pdata["strokes"]:
         xy = [(x, y) for x, y, _ in s["points"]]
@@ -460,6 +561,7 @@ def _add_annotations(page: pymupdf.Page, pdata: dict, pictures_dir: Path | None)
             annot.set_blendmode(pymupdf.PDF_BM_Multiply)
         annot.set_info(subject=SUBJECT_PREFIX + s["id"], title="notes-app")
         annot.update()
+        _annot_data_set(page.parent, annot.xref, s)
     for t in pdata["texts"]:
         if not t["text"].strip():
             continue
@@ -469,12 +571,108 @@ def _add_annotations(page: pymupdf.Page, pdata: dict, pictures_dir: Path | None)
         annot.set_border(width=0)
         annot.set_info(subject=SUBJECT_PREFIX + t["id"], title="notes-app")
         annot.update()
+        _annot_data_set(page.parent, annot.xref, t)
+
+
+def _written(kind: str, item: dict, pictures_dir) -> bool:
+    """Whether _add_annotations writes this item at all (empty texts and
+    missing pictures are not in the file)."""
+    if kind == "texts":
+        return bool(item["text"].strip())
+    if kind == "images":
+        return pictures_dir is not None and PICTURE_RE.match(item["file"]) and (pictures_dir / item["file"]).is_file()
+    return True
+
+
+def _page_changes(now: dict, before: dict, pictures_dir) -> tuple:
+    """(ids to remove, items to add) that turn the page `before` into `now`.
+    A changed item is removed and added again."""
+    remove, add = set(), {"strokes": [], "texts": [], "images": []}
+    for kind in ("strokes", "texts", "images"):
+        old = {item["id"]: item for item in before.get(kind, [])}
+        new = {item["id"]: item for item in now.get(kind, [])}
+        for item_id, item in old.items():
+            if (item_id not in new or new[item_id] != item) and _written(kind, item, pictures_dir):
+                remove.add(item_id)
+        for item_id, item in new.items():
+            if item_id not in old or old[item_id] != item:
+                add[kind].append(item)
+    return remove, add
+
+
+def _save_incremental(path: Path, layer: dict, base_revision: str, prev_layer: dict, pagecache: Path,
+                      pictures_dir: Path | None):
+    """Appends to the PDF only the annotations added, changed or removed since
+    `prev_layer` (what the file holds now). Raises NeedsFullSave when that is not
+    possible (pages changed, an annotation not found, a file that cannot be
+    saved incrementally). Atomic like the full save: the work is done on a copy
+    of the file, which then replaces it."""
+    pages, prev = layer["pages"], prev_layer.get("pages") or []
+    if len(pages) != len(prev) or any(p["id"] != q["id"] or p["src"] != i for i, (p, q) in enumerate(zip(pages, prev))) \
+            or layer.get("nextLayout") != prev_layer.get("nextLayout"):
+        raise NeedsFullSave()
+    changes = []
+    for i, (p, q) in enumerate(zip(pages, prev)):
+        remove, add = _page_changes(p, q, pictures_dir)
+        if remove or any(add.values()):
+            changes.append((i, remove, add))
+    with file_lock(path):
+        current = path.read_bytes()
+        if hashlib.sha256(current).hexdigest() != base_revision:
+            raise RevisionMismatch()
+        if not changes:
+            return base_revision, current, False    # nothing to write
+        fd, tmp = tempfile.mkstemp(prefix=".~", suffix=".pdf.tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(current)
+            doc = pymupdf.open(tmp)
+            try:
+                if doc.page_count != len(pages):
+                    raise NeedsFullSave()
+                for index, remove, add in changes:
+                    page = doc[index]
+                    if remove:
+                        found = {}
+                        for xref, _, _ in page.annot_xrefs():
+                            kind, subject = doc.xref_get_key(xref, "Subj")
+                            if kind == "string" and subject.startswith(SUBJECT_PREFIX):
+                                found.setdefault(subject[len(SUBJECT_PREFIX):], xref)
+                        for item_id in remove:
+                            if item_id not in found:
+                                raise NeedsFullSave()   # not where the layer says: rewrite everything
+                            page.delete_annot(page.load_annot(found[item_id]))
+                    _add_annotations(page, add, pictures_dir)
+                try:
+                    doc.saveIncr()
+                except Exception as e:          # e.g. a repaired file: mupdf refuses incremental saves
+                    raise NeedsFullSave() from e
+            finally:
+                doc.close()
+            with open(tmp, "rb+") as fh:
+                os.fsync(fh.fileno())
+            replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+        data = path.read_bytes()
+        rev = hashlib.sha256(data).hexdigest()
+        remember_layer(pagecache, rev, {
+            "version": LAYER_VERSION, "docId": layer["docId"], "nextLayout": layer.get("nextLayout"),
+            "pages": [{**p, "src": i, "render": i, "blank": False} for i, p in enumerate(pages)], "app": True})
+        return rev, data, False
 
 
 def save_document(path: Path, layer: dict, base_revision: str, pagecache: Path,
                   base_bytes: bytes | None = None, backup_to: Path | None = None,
-                  pictures_dir: Path | None = None):
-    """Writes the layer into the PDF. Returns (new revision, written content).
+                  pictures_dir: Path | None = None, prev_layer: dict | None = None, full: bool = True):
+    """Writes the layer into the PDF. Returns (new revision, written content,
+    whether the whole file was written).
+
+    Incremental (full=False, with prev_layer = the layer the file holds now):
+    only the annotations that changed are written, appended to the file; when
+    that is not possible the whole file is written as below.
 
     Normal: the file on disk must still be at revision `base_revision`
     (otherwise RevisionMismatch) and is the base for writing.
@@ -488,6 +686,11 @@ def save_document(path: Path, layer: dict, base_revision: str, pagecache: Path,
     into memory: no file stays open during the replacement (on Windows an open
     file cannot be replaced).
     """
+    if not full and prev_layer is not None and base_bytes is None:
+        try:
+            return _save_incremental(path, layer, base_revision, prev_layer, pagecache, pictures_dir)
+        except NeedsFullSave:
+            pass
     with file_lock(path):
         if base_bytes is None:
             current = path.read_bytes()
@@ -533,7 +736,13 @@ def save_document(path: Path, layer: dict, base_revision: str, pagecache: Path,
         finally:
             doc.close()
         data = path.read_bytes()
-        return hashlib.sha256(data).hexdigest(), data
+        rev = hashlib.sha256(data).hexdigest()
+        # What was just written is exactly what reading the file back would give:
+        # remembered, so the next opening does not read it.
+        remember_layer(pagecache, rev, {
+            "version": LAYER_VERSION, "docId": layer["docId"], "nextLayout": layer.get("nextLayout"),
+            "pages": [{**p, "src": i, "render": i, "blank": False} for i, p in enumerate(layer["pages"])], "app": True})
+        return rev, data, True
 
 
 def _rebuild(doc: pymupdf.Document, layer: dict, pagecache: Path,

@@ -13,6 +13,12 @@ APP_PAGES = {"/": "index", "/edit": "edit_page", "/cestino": "trash_page",
              "/account": "account_page", "/cerca": "search_page"}
 
 
+def uses_local_ca(config) -> bool:
+    """HTTPS with the certificate created by the app, which each device installs
+    once (not with an own certificate or behind a proxy)."""
+    return config.https and config.tls_cert is None and not config.behind_proxy
+
+
 def register(app):
     # --- HTTPS certificate -----------------------------------------------------------
     @app.get("/certificato")
@@ -21,14 +27,14 @@ def register(app):
         no secrets). Safari recognises it and offers to install it as a profile."""
         config = controllers().config
         ca = ca_certificate(config.data_dir)
-        if not config.https or ca is None:
+        if not uses_local_ca(config) or ca is None:
             abort(404)
         return send_file(ca, mimetype="application/x-x509-ca-cert", as_attachment=True,
                          download_name="Note-PDF-certificato.crt", max_age=0)
 
     @app.get("/certificato/istruzioni")
     def certificate_help():
-        if not controllers().config.https:
+        if not uses_local_ca(controllers().config):
             abort(404)
         return render_template("certificate.html")
 
@@ -38,7 +44,7 @@ def register(app):
         auth, config = controllers().auth, controllers().config
         if session.get("uid") and request.method == "GET":
             return redirect(url_for("index"))
-        if auth.needs_first_user():
+        if auth.needs_first_user() and auth.registration_open():
             return redirect(url_for("register"))  # first start: the first account is created
         error = None
         if request.method == "POST":
@@ -53,8 +59,9 @@ def register(app):
                 except ControlError as e:
                     error = e.message
         return render_template("login.html", error=error, csrf=new_form_token(),
-                               allow_registration=auth.allow_registration,
-                               https=config.https), (401 if error else 200)
+                               allow_registration=auth.registration_open(),
+                               no_users=auth.needs_first_user(),
+                               https=uses_local_ca(config)), (401 if error else 200)
 
     @app.route("/register", methods=["GET", "POST"])
     def register():
@@ -79,7 +86,7 @@ def register(app):
                     error = e.message
         return render_template("register.html", error=error, csrf=new_form_token(),
                                username=username, first_user=first_user,
-                               https=config.https), (400 if error else 200)
+                               https=uses_local_ca(config)), (400 if error else 200)
 
     @app.post("/logout")
     @login_required

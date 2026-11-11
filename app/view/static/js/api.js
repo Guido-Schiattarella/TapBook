@@ -5,11 +5,19 @@
 // request is worth sending again. Any other error is not retried.
 export class NetworkError extends Error {}
 
-async function send(url, options) {
+// timeout (ms): a connection that stops answering (a hotspot losing packets) is
+// abandoned and counts as a network problem, so the request is sent again on a
+// new connection instead of waiting for minutes. Only the time to receive the
+// answer's headers counts: a long download is not cut.
+async function send(url, options, timeout = 0) {
+  const controller = timeout ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeout) : null;
   try {
-    return await fetch(url, options);
+    return await fetch(url, controller ? { ...options, signal: controller.signal } : options);
   } catch {
     throw new NetworkError('Rete non raggiungibile');
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -29,19 +37,19 @@ async function handle(resp) {
   return data;
 }
 
-export async function apiGet(url, params = {}) {
+export async function apiGet(url, params = {}, { timeout = 0 } = {}) {
   const qs = new URLSearchParams(params).toString();
-  return handle(await send(qs ? `${url}?${qs}` : url, { credentials: 'same-origin' }));
+  return handle(await send(qs ? `${url}?${qs}` : url, { credentials: 'same-origin' }, timeout));
 }
 
-export async function apiPost(url, body) {
+export async function apiPost(url, body, { timeout = 0 } = {}) {
   const isForm = body instanceof FormData;
   return handle(await send(url, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'X-Requested-With': 'notes-app', ...(isForm ? {} : { 'Content-Type': 'application/json' }) },
     body: isForm ? body : JSON.stringify(body),
-  }));
+  }, timeout));
 }
 
 export function parentOf(path) {

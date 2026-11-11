@@ -21,7 +21,7 @@ H = {"X-Requested-With": "notes-app"}
 def main():
     check = Checks("test_security")
     cfg = load_config(); c = build_controllers(cfg)
-    app = create_app(cfg, c.auth, c.library, c.navigation, c.editing, c.account, c.diagnostics)
+    app = create_app(cfg, c.auth, c.library, c.navigation, c.editing, c.account, c.diagnostics, c.sync)
     app.testing = True
     for u, p in (("anna", "Password-Anna-1"), ("bruno", "Password-Bruno-1"), ("carla", "Password-Carla-1")):
         c.auth.create_user(u, p)
@@ -38,7 +38,8 @@ def main():
 
     # --- no login, CSRF, brute force, cookies, redirects --------------------------------
     anon = app.test_client()
-    posts = [r.rule for r in app.url_map.iter_rules() if "POST" in r.methods and r.rule.startswith("/api/")]
+    posts = [r.rule for r in app.url_map.iter_rules() if "POST" in r.methods and r.rule.startswith("/api/")
+             and not r.rule.startswith("/api/sync/")]  # TapBook Sync: token, not cookie (test_sync.py)
     for url in posts:
         check(post(anon, url).status_code == 401, f"no login: POST {url}")
     for url in ["/api/edit/listen", "/api/edit/background?id=" + "0" * 32, "/api/doc/raw?path=a.pdf", "/api/account/avatar", "/api/edit/picture", "/api/layout/preview"]:

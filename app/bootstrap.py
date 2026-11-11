@@ -15,6 +15,7 @@ from .control.diagnostics import DiagnosticsController
 from .control.editing import EditController
 from .control.library import LibraryController
 from .control.navigation import NavigationController
+from .control.sync import SyncController
 from .model.client_log import ClientLog
 from .model.dbserver import EmbeddedDBError, migrate_legacy_users
 from .model.user_store import UserStore
@@ -28,6 +29,7 @@ class Controllers:
     navigation: NavigationController
     account: AccountController
     diagnostics: DiagnosticsController
+    sync: SyncController
 
 
 def prepare_storage(config: Config) -> UserStore:
@@ -63,4 +65,5 @@ def build_controllers(config: Config) -> Controllers:
     navigation = NavigationController(library, editing)
     account = AccountController(auth, library, editing, config.notes_root)
     diagnostics = DiagnosticsController(ClientLog(config.data_dir))
-    return Controllers(auth, library, editing, navigation, account, diagnostics)
+    sync = SyncController(auth, library, editing, config.data_dir / "sync", config.max_upload_mb * 1024 * 1024)
+    return Controllers(auth, library, editing, navigation, account, diagnostics, sync)

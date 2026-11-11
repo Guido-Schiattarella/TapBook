@@ -149,6 +149,24 @@ def main():
     ed.apply("anna", sid, {"type": "undo"})
     r = ed.apply("anna", sid, {"type": "erase", "page": pid, "path": [[150, 140]], "radius": 3, "ids": ["line1"]})
     check(not [e for e in r["events"] if e["event"] == "strokeRemoved"], "named stroke far away kept")
+
+    # An operation sent again (answer lost, time limit) is not applied twice
+    def count(stroke_id):
+        doc = ed.rooms[("anna", rel)].doc
+        return sum(1 for p in doc.pages for st in p["strokes"] if st["id"] == stroke_id)
+    op = {"type": "addStroke", "page": pid, "seq": 101,
+          "stroke": {"id": "dup1", "tool": "pen", "color": "#000000", "width": 1, "points": [[10, 10, .5], [60, 60, .5]]}}
+    first = ed.apply("anna", sid, dict(op))
+    again = ed.apply("anna", sid, dict(op))
+    check(count("dup1") == 1 and again == first, "repeated operation: applied once, same answer")
+    ed.apply("anna", sid, {"type": "undo", "seq": 102})
+    late = ed.apply("anna", sid, dict(op))          # an old copy arriving after a newer operation
+    check(count("dup1") == 0, "late copy of an older operation ignored")
+    ed.apply("anna", sid, {"type": "redo", "seq": 103})
+    check(count("dup1") == 1, "numbered operations go on normally")
+    ed.apply("anna", sid, {"type": "undo"})
+    ed.apply("anna", sid, {"type": "redo"})
+    check(count("dup1") == 1, "operations without a number still work")
     check.done()
 
 

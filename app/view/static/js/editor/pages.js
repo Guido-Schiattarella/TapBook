@@ -1,8 +1,6 @@
 // VIEW — editor, pages: adding, deleting, layout, page elements, position in the list.
 // EditorView methods (see editor_view.js): here `this` is the editor.
-import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { renderLayoutOptions } from '../layout_picker.js';
-import { PDF_OPTIONS } from './shared.js';
 
 export class PagesMethods {
   currentPageIndex() {
@@ -53,16 +51,23 @@ export class PagesMethods {
   }
 
   // Background of a page added in this session: the empty page with its layout,
-  // drawn by the computer (one copy per layout and size).
+  // drawn by the computer (one copy per layout and size), handed to the painter.
+  // Resolves to the painter's key for it (or null if it could not be fetched).
   layoutPdf(page) {
     const key = `${page.layout}|${page.w}|${page.h}`;
     if (!this.layoutDocs.has(key)) {
       const session = this.session;
       this.layoutDocs.set(key, (async () => {
-        const url = `/api/edit/layout?session=${encodeURIComponent(session)}&page=${encodeURIComponent(page.id)}`;
-        const resp = await fetch(url, { credentials: 'same-origin' });
-        if (!resp.ok) { this.layoutDocs.delete(key); return null; }
-        return pdfjsLib.getDocument({ data: new Uint8Array(await resp.arrayBuffer()), ...PDF_OPTIONS }).promise;
+        try {
+          const url = `/api/edit/layout?session=${encodeURIComponent(session)}&page=${encodeURIComponent(page.id)}`;
+          const resp = await fetch(url, { credentials: 'same-origin' });
+          if (!resp.ok) throw new Error(resp.statusText);
+          await this.painter.open('layout:' + key, new Uint8Array(await resp.arrayBuffer()));
+          return 'layout:' + key;
+        } catch {
+          this.layoutDocs.delete(key);
+          return null;
+        }
       })());
     }
     return this.layoutDocs.get(key);
@@ -82,6 +87,8 @@ export class PagesMethods {
     el.style.width = page.w * this.scale + 'px';
     el.style.height = page.h * this.scale + 'px';
     el.dataset.id = page.id;
+    const coarse = document.createElement('canvas');   // whole page, blurred, under the sharp regions (strong zoom)
+    coarse.className = 'coarse';
     const base = document.createElement('canvas');
     const images = document.createElement('div');   // below the strokes: you can write on photos
     images.className = 'images';
@@ -91,8 +98,9 @@ export class PagesMethods {
     texts.className = 'texts';
     const label = document.createElement('span');
     label.className = 'label';
-    el.append(base, images, ink, texts, label);
-    const v = { el, base, images, ink, texts, label, w: page.w, h: page.h, rendered: false, task: null };
+    el.append(coarse, base, images, ink, texts, label);
+    const v = { el, coarse, base, images, ink, texts, label, w: page.w, h: page.h, rendered: false, task: null,
+      region: null, shown: null, coarseScale: 0 };
     this.els.set(page.id, v);
     this.renderImages(page);
     this.renderTexts(page);
@@ -103,6 +111,7 @@ export class PagesMethods {
   updateLabels() {
     this.pages.forEach((page, index) => { this.els.get(page.id).label.textContent = `${index + 1} / ${this.pages.length}`; });
     document.getElementById('btn-del-page').disabled = this.pages.length <= 1;
+    this.showPageButton();
   }
 
   // Full rebuild (opening, background changed on the computer, window resized).
@@ -127,20 +136,36 @@ export class PagesMethods {
   // otherwise (other devices, undo) stay where you were.
   syncPages(pages, focus) {
     const anchor = this.topAnchor();
-    const oldIds = new Set(this.pages.map((p) => p.id));
+    const before = new Map(this.pages.map((p) => [p.id, p]));
+    const oldIds = new Set(before.keys());
     this.pages = pages;
+    const background = (p) => JSON.stringify([p.bg || null, p.layout || null]);
     const keep = new Set(pages.map((p) => p.id));
     for (const [id, v] of this.els) {
       if (!keep.has(id)) { this.discardPage(v); this.observer.unobserve(v.el); v.el.remove(); this.els.delete(id); }
     }
-    for (const page of pages) {
+    for (const [index, page] of pages.entries()) {
       let v = this.els.get(page.id);
       if (v && (v.w !== page.w || v.h !== page.h)) {   // size changed: rebuild it
         this.discardPage(v); this.observer.unobserve(v.el); v.el.remove(); this.els.delete(page.id); v = null;
       }
       if (!v) v = this.createPageEl(page);
-      else { this.renderTexts(page); this.renderImages(page); if (v.rendered) this.drawInk(page); }
-      this.innerEl.append(v.el);   // moving an element does not wipe its drawing
+      else {
+        this.renderTexts(page);
+        this.renderImages(page);
+        const old = before.get(page.id);
+        if (v.rendered && old && background(old) !== background(page)) {
+          v.coarseScale = 0;             // its background changed (e.g. on the computer): drawn again whole
+          this.renderPage(page, v);
+        } else if (v.rendered) {
+          this.drawInk(page);
+        }
+      }
+      // Put in its place only if it is not there already: moving an element (even to
+      // the same place) makes the browser drop the Pencil's capture on it, and the
+      // stroke being written on that page would end there. (Moving does not wipe its drawing.)
+      const at = this.innerEl.children[index];
+      if (at !== v.el) this.innerEl.insertBefore(v.el, at || null);
     }
     this.updateLabels();
     const added = pages.find((p) => !oldIds.has(p.id));

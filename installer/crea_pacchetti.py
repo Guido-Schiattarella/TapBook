@@ -27,36 +27,48 @@ README = {
 
 Installation: open a terminal in this folder and type
     bash install.sh
-The installer asks for the administrator password, checks Python 3.10+, venv and
-Tk and installs whatever is missing, then adds TapBook to the applications menu.
-A progress bar shows each step; the full log is saved in
-~/.local/share/tapbook/install.log.
+The installer asks what to install:
+  1) TapBook Server - the notes app, used from the iPad's browser. On a computer
+     with a screen it gets its control panel; on a machine without one (a VPS)
+     it becomes a background service that starts with the machine.
+  2) TapBook Sync - keeps a folder of this computer aligned with a TapBook Server.
+If it is already installed it asks whether to update it (settings untouched) or
+to install it from scratch (all the questions again; documents and accounts are
+kept). It always asks for the administrator password and installs whatever is
+missing (Python 3.10+, venv, Tk). The full log is saved in install.log in the
+installation folder (~/.local/share/tapbook or ~/.local/share/tapbook-sync).
 
-Use: open TapBook from the applications menu, press "Avvia il server" (start the
-server) and open on the iPad the address shown in the window (same Wi-Fi network).
-If the firewall is active, the window asks for the administrator password to open
-the port to the home network only, and only while the server is running.
+TapBook Server: open it from the applications menu, press "Avvia il server" and
+open on the iPad the address shown in the window. On a VPS: tapbook status,
+tapbook user add <name>, tapbook logs -f (see "TapBook on a VPS" in the README).
+TapBook Sync: open it from the applications menu, connect the server (address,
+name, password) and choose the folder.
 
-Update: download the new package, close TapBook and run bash install.sh again
-(documents, accounts and settings are kept).
-Uninstall: ~/.local/share/tapbook/uninstall.sh (documents in ~/Note are kept).
+Uninstall: ~/.local/share/tapbook/uninstall.sh (server, documents in ~/Note are
+kept) or ~/.local/share/tapbook-sync/uninstall.sh (sync, the folder is kept).
 """,
     "windows": """TapBook {v} - Windows
 
 Installation: extract the whole archive, then right-click "Install TapBook.cmd"
 and choose "Run as administrator" (Windows does not start it with a plain
-double-click). If Python 3.10+ is missing it is installed automatically; then
-TapBook appears in the Start menu and on the desktop. A progress bar shows each
-step; the full log is saved in %LOCALAPPDATA%\\Programs\\TapBook\\install.log.
+double-click). The installer asks what to install:
+  1) TapBook Server - the notes app, used from the iPad's browser, with its
+     control panel;
+  2) TapBook Sync - keeps a folder of this computer aligned with a TapBook Server
+     (for example on a VPS).
+If it is already installed it asks whether to update it (settings untouched) or
+to install it from scratch (all the questions again; documents and accounts are
+kept). If Python 3.10+ is missing it is installed automatically. The full log is
+saved in install.log in the installation folder.
 
-Use: open TapBook, press "Avvia il server" (start the server) and open on the iPad
-the address shown in the window (same Wi-Fi network). With the Windows firewall
-active, Windows asks for a confirmation to open the port to the home network only.
+TapBook Server: open it from the Start menu, press "Avvia il server" and open on
+the iPad the address shown in the window. Accounts from the terminal:
+%LOCALAPPDATA%\\Programs\\TapBook\\tapbook.cmd user add <name>
+TapBook Sync: open it from the Start menu, connect the server (address, name,
+password) and choose the folder; it then starts at every login.
 
-Update: download the new package, close TapBook and run "Install TapBook.cmd"
-again as administrator (documents, accounts and settings are kept).
-Uninstall: Settings > Apps > Installed apps > TapBook (documents in the Note
-folder are kept).
+Uninstall: Settings > Apps > Installed apps > TapBook Server / TapBook Sync
+(documents and the synchronised folder are kept).
 """,
 }
 LINUX_START = "#!/usr/bin/env bash\n# TapBook: installation on Linux.\nexec bash \"$(dirname \"$0\")/installer/linux/install.sh\" \"$@\"\n"

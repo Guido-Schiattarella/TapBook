@@ -14,6 +14,10 @@ Every device that opens it is a "client" of the room:
      the PDF; if the file was changed on the computer in the meantime, the
      changes are merged (merge_external) or, if the pages changed, the version
      in use wins and the computer's version goes to the trash.
+When the last device leaves, the document is saved and closed. The device does
+not wait for the writing (seconds, for a document with thousands of strokes): the
+room stays until the file is written, and a device that opens the document in
+the meantime joins it again, without reading the file.
 Each device has its own undo/redo history: it undoes only its own changes.
 """
 import collections
@@ -30,6 +34,7 @@ from ..model import backgrounds, layouts, pdf_store, save_worker
 from ..model.backgrounds import BackgroundStore
 from ..model.document import OpenDocument, PageStructureChanged, new_id
 from ..model.pictures import InvalidPicture, prepare_picture
+from ..model.positions import PositionStore
 from . import geometry, shapes
 from .errors import ControlError, InvalidInput, NotFound
 
@@ -62,6 +67,7 @@ ERASE_TOLERANCE = 1.5
 MAX_ERASE_IDS = 5000
 DEVICE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")   # browser tab identifier
 DUPLICATE_OFFSET = 15.0              # offset of the copies made with the lasso
+MAX_PASTE_ITEMS = 5000               # items pasted at once (copy and paste)
 
 # Kinds of page items and the model methods that add/remove them.
 ITEM_KINDS = {"strokes": ("add_stroke", "remove_stroke"),
@@ -179,6 +185,7 @@ class Room:
         self.changed = threading.Condition(self.lock)
         self.timer = None
         self.closed = False
+        self.closing = False                 # last device gone: being saved, then closed
         # Writing the PDF happens outside `lock` (see EditController._save):
         # save_lock is held only while writing, and the result waits in
         # pending_save until it is recorded with `lock` held.
@@ -206,6 +213,11 @@ class Client:
         self.outbox = []                     # events to deliver to this device
         self.last_used = time.time()         # last change made by this device
         self.sent_state = None               # last save status reported
+        # Operations are numbered by the view: one sent again because its answer was
+        # lost (time limit, network) is answered without applying it a second time.
+        self.op_lock = threading.Lock()
+        self.last_seq = 0
+        self.last_reply = None
 
 
 class EditController:
@@ -215,6 +227,8 @@ class EditController:
         # Backgrounds stored so that the devices download them only once (backgrounds.py).
         self.backgrounds_root = backgrounds_root or pagecache_root.parent / "backgrounds"
         backgrounds.expire(self.backgrounds_root)         # documents not opened for a long time
+        # Where each user stopped reading every document (positions.py).
+        self.positions = PositionStore(pagecache_root.parent / "positions")
         self.idle_seconds = idle_minutes * 60
         self.rooms: dict[tuple, Room] = {}
         self.clients: dict[str, Client] = {}
@@ -250,6 +264,7 @@ class EditController:
             with room.lock:
                 if room.closed:
                     continue      # it was closing: a new one is created
+                room.closing = False          # still being saved after the last device left: joined again
                 client = Client(room, device)
                 room.clients[client.id] = client
                 if device:
@@ -264,6 +279,10 @@ class EditController:
                           "backgrounds": room.doc.background_sizes(),
                           "layout": room.doc.next_layout, "layouts": self.library.layout_catalog(),
                           "eraserRadius": ERASER_RADIUS}
+                # The document opens where this user stopped last time (on any device).
+                where = self.positions.get(username, room.doc.doc_id)
+                if where and where["page"] < len(room.doc.pages):
+                    result["startPage"], result["startOffset"] = where["page"], where["offset"]
                 room.broadcast([{"event": "devices", "count": len(room.clients)}], exclude=client)
             with self.lock:
                 self.clients[client.id] = client
@@ -276,23 +295,59 @@ class EditController:
         self._detach(client, "closed")
         return client.room.rel.rpartition("/")[0]
 
-    def is_open(self, username: str, rel: str) -> bool:
-        """True if the document `rel`, or a document inside the folder `rel`, is open."""
-        with self.lock:
-            return any(u == username and (r == rel or not rel or r.startswith(rel + "/"))
-                       for u, r in self.rooms)
+    def is_open(self, username: str, rel: str, wait: float = 0.0) -> bool:
+        """True if the document `rel`, or a document inside the folder `rel`, is open.
+        A document whose last device just left is still being written: with
+        `wait` (seconds) that writing is waited for, so that renaming or deleting
+        right after closing works instead of being refused."""
+        deadline = time.monotonic() + wait
+        while True:
+            with self.lock:
+                rooms = [room for (u, r), room in self.rooms.items()
+                         if u == username and (r == rel or not rel or r.startswith(rel + "/"))]
+            if not rooms:
+                return False
+            finishing = [room for room in rooms if not room.clients and not room.closed]
+            if len(finishing) < len(rooms) or time.monotonic() >= deadline:
+                return True
+            for room in finishing:
+                with room.lock:
+                    if not room.closed and not room.clients:
+                        room.changed.wait(min(0.5, max(0.01, deadline - time.monotonic())))
 
     def close_user(self, username: str):
         """Account deleted: its open documents are saved and closed."""
         for client in list(self.clients.values()):
             if client.room.username == username:
-                self._detach(client, "closed")
+                self._detach(client, "closed", wait=True)
+        self.positions.forget_user(username)
+
+    def set_position(self, username: str, client_id: str, page, offset=0.0):
+        """The view says which page the reader is looking at (and how far down it):
+        remembered so that the document opens there next time. Not a change of
+        the document: nothing to save, nothing to undo."""
+        client = self._get(username, client_id)
+        if not isinstance(page, int) or isinstance(page, bool):
+            raise InvalidInput("Pagina non valida")
+        with client.room.lock:
+            count = len(client.room.doc.pages)
+            doc_id = client.room.doc.doc_id
+        if not 0 <= page < count:
+            raise InvalidInput("Pagina non valida")
+        self.positions.set(username, doc_id, page, _num(offset, 0, 1) if offset is not None else 0.0)
 
     def flush_all(self):
         """On server shutdown: saves all open documents, then stops the process
         that writes the PDFs."""
         for client in list(self.clients.values()):
-            self._detach(client, "shutdown")
+            self._detach(client, "shutdown", wait=True)
+        # Documents left by their last device and still being written: waited for.
+        for room in list(self.rooms.values()):
+            with room.lock:
+                if not room.closed and not room.clients:
+                    self._save_now(room)
+                    self._finalize_close(room)
+            self._forget_room(room)
         save_worker.shutdown()
 
     # --- operations from the view ----------------------------------------------------------
@@ -303,7 +358,18 @@ class EditController:
         handler = getattr(self, "_op_" + op["type"], None)
         if handler is None:
             raise InvalidInput("Operazione sconosciuta")
-        return self._run(client, lambda: handler(client, op))
+        seq = op.get("seq")
+        if not (isinstance(seq, int) and not isinstance(seq, bool) and 0 < seq < 2 ** 53):
+            seq = None
+        with client.op_lock:
+            # Already applied (the device did not receive the answer and sent it again,
+            # or an old copy arrived late): the answer it had is returned instead.
+            if seq is not None and seq <= client.last_seq and client.last_reply is not None:
+                return client.last_reply
+            reply = self._run(client, lambda: handler(client, op))
+            if seq is not None:
+                client.last_seq, client.last_reply = seq, reply
+            return reply
 
     def _run(self, client: Client, action) -> dict:
         """Runs a change on the model while collecting its notifications: they go to
@@ -488,10 +554,15 @@ class EditController:
             raise InvalidInput("Troppe caselle di testo in questa pagina")
         x, y = _num(op.get("x"), 0, page["w"]), _num(op.get("y"), 0, page["h"])
         size = _num(op.get("size", 16), TEXT_SIZE_MIN, TEXT_SIZE_MAX)
-        t = {"id": new_id(), "x": x, "y": max(0.0, y - size * 0.6), "w": min(260.0, page["w"] - x - 10),
-             "h": max(30.0, size * 1.6), "size": size, "color": _color(op.get("color", "#000000")), "text": ""}
+        text = _text_value(op.get("text", ""))       # pasted text, if any (otherwise typed later)
+        lines = text.count("\n") + 1 if text else 1
+        longest = max((len(line) for line in text.split("\n")), default=0)
+        width = min(max(260.0, longest * size * 0.55 + 10), 520.0) if text else 260.0
+        t = {"id": new_id(), "x": x, "y": max(0.0, y - size * 0.6), "w": min(width, page["w"] - x - 10),
+             "h": max(30.0, size * 1.6, lines * size * 1.25 + 6), "size": size,
+             "color": _color(op.get("color", "#000000")), "text": text}
         if t["w"] < 60:
-            t["x"], t["w"] = max(0.0, page["w"] - 270), 260.0
+            t["x"], t["w"] = max(0.0, page["w"] - width - 10), width
         self._push(client, undo=lambda: doc.remove_text(pid, t["id"]),
                    redo=lambda: doc.add_text(pid, t), tag=("addText", t["id"]))
 
@@ -512,13 +583,42 @@ class EditController:
                            redo=lambda: doc.update_text(pid, tid, **after), execute=False)
 
     def _op_moveText(self, client, op):
+        """Box dragged by its handle. With `toPage` it was dropped on another page:
+        it leaves its page and joins that one (same box, same id)."""
         doc, pid, tid = client.room.doc, _id(op.get("page")), _id(op.get("id"))
         t = doc.text(pid, tid)
         before = {"x": t["x"], "y": t["y"]}
         after = {"x": _num(op.get("x"), -5000, 20000), "y": _num(op.get("y"), -5000, 20000)}
-        if before != after:
+        to = _id(op["toPage"]) if op.get("toPage") not in (None, pid) else None
+        if to is not None:
+            self._transfer(client, "texts", pid, to, t, after)
+        elif before != after:
             self._push(client, undo=lambda: doc.update_text(pid, tid, **before),
                        redo=lambda: doc.update_text(pid, tid, **after))
+
+    def _transfer(self, client, kind, pid, to, item, after: dict):
+        """Moves a text box or an image to another page (one undo step): removed
+        from the page it was on, added at the end of the other with its new position."""
+        doc = client.room.doc
+        doc.page(to)                                       # LookupError if that page no longer exists
+        if len(doc.page(to)[kind]) >= (MAX_TEXTS_PER_PAGE if kind == "texts" else MAX_IMAGES_PER_PAGE):
+            raise InvalidInput("Troppi elementi nella pagina di destinazione")
+        add, remove = ITEM_KINDS[kind]
+        index = doc.page(pid)[kind].index(item)
+        before = {k: item[k] for k in after}
+        moved = {**item, **after}
+
+        def redo():
+            getattr(doc, remove)(pid, item["id"])
+            getattr(doc, add)(to, moved)
+
+        def undo():
+            getattr(doc, remove)(to, item["id"])
+            getattr(doc, add)(pid, {**item, **before}, min(index, len(doc.page(pid)[kind])))
+
+        if kind == "texts":
+            client.text_before.pop((pid, item["id"]), None)   # an edit in progress ends here
+        self._push(client, undo=undo, redo=redo)
 
     def _op_changeText(self, client, op):
         """Box resized, or new font size or colour: one undo step. Only the fields
@@ -574,7 +674,10 @@ class EditController:
         before = {k: img[k] for k in ("x", "y", "w", "h")}
         after = {"x": _num(op.get("x"), -5000, 20000), "y": _num(op.get("y"), -5000, 20000),
                  "w": _num(op.get("w"), 10, page["w"] * 2), "h": _num(op.get("h"), 10, page["h"] * 2)}
-        if before != after:
+        to = _id(op["toPage"]) if op.get("toPage") not in (None, pid) else None
+        if to is not None:                              # dropped on another page
+            self._transfer(client, "images", pid, to, img, after)
+        elif before != after:
             self._push(client, undo=lambda: doc.update_image(pid, iid, **before),
                        redo=lambda: doc.update_image(pid, iid, **after))
 
@@ -707,6 +810,73 @@ class EditController:
         self._push(client, undo=lambda: _remove_items(doc, pid, ids), redo=redo)
         return [{"event": "selection", "page": pid, **{k: sorted(v) for k, v in ids.items()}}]
 
+    # --- copy and paste ------------------------------------------------------------------------
+    # The view keeps what was copied (strokes, texts, images of a lasso selection) and
+    # sends it back on paste, shifted by dx, dy, onto the page in view: everything is
+    # validated as if new and gets new ids. Images are references to files of this
+    # document, so only images copied from the same document can be pasted (the
+    # view is told about the ones left out).
+    def _op_paste(self, client, op):
+        doc, pid = client.room.doc, _id(op.get("page"))
+        page = doc.page(pid)
+        dx, dy = _num(op.get("dx", 0), -20000, 20000), _num(op.get("dy", 0), -20000, 20000)
+        strokes, texts, images = op.get("strokes") or [], op.get("texts") or [], op.get("images") or []
+        if not all(isinstance(v, list) for v in (strokes, texts, images)) \
+                or len(strokes) + len(texts) + len(images) > MAX_PASTE_ITEMS:
+            raise InvalidInput("Elementi da incollare non validi")
+        copies = {"strokes": [], "texts": [], "images": []}
+        for s in strokes:
+            st = validate_stroke({**s, "id": new_id()} if isinstance(s, dict) else s)
+            st["points"] = [[round(x + dx, 2), round(y + dy, 2), pr] for x, y, pr in st["points"]]
+            copies["strokes"].append(st)
+        for t in texts:
+            if not isinstance(t, dict):
+                raise InvalidInput("Testo non valido")
+            copies["texts"].append({
+                "id": new_id(), "x": _num(t.get("x", 0), -5000, 20000) + dx, "y": _num(t.get("y", 0), -5000, 20000) + dy,
+                "w": _num(t.get("w", 200), TEXT_W_MIN, 20000), "h": _num(t.get("h", 30), 10, 5000),
+                "size": _num(t.get("size", 16), TEXT_SIZE_MIN, TEXT_SIZE_MAX),
+                "color": _color(t.get("color", "#000000")), "text": _text_value(t.get("text", ""))})
+        skipped = 0
+        for i in images:
+            if not isinstance(i, dict):
+                raise InvalidInput("Immagine non valida")
+            source = self._image_anywhere(doc, _id(i.get("id")))
+            if source is None:
+                skipped += 1                                # from another document: no file here
+                continue
+            copies["images"].append({**source, "id": new_id(),
+                                     "x": _num(i.get("x", source["x"]), -5000, 20000) + dx,
+                                     "y": _num(i.get("y", source["y"]), -5000, 20000) + dy,
+                                     "w": _num(i.get("w", source["w"]), 10, page["w"] * 2),
+                                     "h": _num(i.get("h", source["h"]), 10, page["h"] * 2)})
+        notice = ([{"event": "notice", "message": "Le immagini si possono incollare solo nello stesso documento: "
+                    f"{skipped} non incollat{'a' if skipped == 1 else 'e'}."}] if skipped else [])
+        if not any(copies.values()):
+            return notice
+        if (len(page["strokes"]) + len(copies["strokes"]) > MAX_STROKES_PER_PAGE
+                or len(page["texts"]) + len(copies["texts"]) > MAX_TEXTS_PER_PAGE
+                or len(page.get("images", [])) + len(copies["images"]) > MAX_IMAGES_PER_PAGE):
+            raise InvalidInput("Troppi elementi in questa pagina")
+        ids = {kind: {item["id"] for item in items} for kind, items in copies.items()}
+
+        def redo():
+            for kind, items in copies.items():
+                for item in items:
+                    getattr(doc, ITEM_KINDS[kind][0])(pid, item)
+
+        self._push(client, undo=lambda: _remove_items(doc, pid, ids), redo=redo)
+        return [{"event": "selection", "page": pid, **{k: sorted(v) for k, v in ids.items()}}] + notice
+
+    @staticmethod
+    def _image_anywhere(doc, image_id):
+        """An image of this document, on any page (deleted ones too, if the file is still there)."""
+        for p in doc.all_pages.values():
+            for img in p.get("images", []):
+                if img["id"] == image_id and (doc.pictures_dir / img["file"]).is_file():
+                    return img
+        return None
+
     # --- autosave ---------------------------------------------------------------------------
     def _schedule_save(self, room):
         """Every change (from any device) restarts the 1-second countdown."""
@@ -730,7 +900,9 @@ class EditController:
             if room.closed or room.saving or room.state not in ("pending", "error"):
                 return
             try:
-                job = room.doc.prepare_save()
+                # The last save before the room closes writes the whole file (compact,
+                # with the layer file up to date); the others only what changed.
+                job = room.doc.prepare_save(full=room.closing and not room.clients)
             except Exception:
                 # Never leave a save "in progress" that is not: try again shortly.
                 room.state = "error"
@@ -775,6 +947,10 @@ class EditController:
         if changed_meanwhile:
             self._start_timer(room, AUTOSAVE_DELAY)   # the changes made meanwhile get their own save
         room.changed.notify_all()
+        # Last device gone and a failed write finally done: the room closes now.
+        if room.closing and not room.clients and room.state == "saved":
+            self._finalize_close(room)
+            threading.Thread(target=self._forget_room, args=(room,), daemon=True).start()
 
     def _save_now(self, room):
         """Saves right away, with room.lock held (last device leaving, or after a
@@ -835,9 +1011,12 @@ class EditController:
             raise SessionGone(reason)
         return client
 
-    def _detach(self, client: Client, reason: str):
-        """Disconnects a device. If it was the last one, the document is saved and closed."""
+    def _detach(self, client: Client, reason: str, wait: bool = False):
+        """Disconnects a device. If it was the last one, the document is saved and
+        closed: at once if there is nothing to write (or `wait`), otherwise in the
+        background, so the device does not wait for the file."""
         room = client.room
+        forget = False
         with room.lock:
             if client.id not in room.clients:
                 return
@@ -848,9 +1027,14 @@ class EditController:
             if last:
                 if room.timer:
                     room.timer.cancel()
-                self._save_now(room)
-                room.closed = True
-                self._trash_unused_pictures(room)
+                compact = room.doc.incremental_saves > 0      # incremental saves since the last full one
+                if wait or (room.state == "saved" and not room.saving and room.pending_save is None and not compact):
+                    self._save_now(room)
+                    self._finalize_close(room)
+                    forget = True
+                else:
+                    room.closing = True
+                    threading.Thread(target=self._close_later, args=(room,), daemon=True, name="chiusura").start()
             else:
                 room.broadcast([{"event": "devices", "count": len(room.clients)}])
             room.changed.notify_all()
@@ -859,7 +1043,43 @@ class EditController:
             self.closed[client.id] = reason
             while len(self.closed) > 1000:
                 self.closed.popitem(last=False)
-            if last and self.rooms.get((room.username, room.rel)) is room:
+        if forget:
+            self._forget_room(room)
+
+    def _close_later(self, room):
+        """Background: writes the file after the last device left, then closes the
+        room, unless a device opened the document again in the meantime. The
+        writing happens without the room's lock (like the autosave), so a device
+        that comes back joins the room at once instead of waiting for the file."""
+        while True:
+            with room.lock:
+                if room.clients or not room.closing:
+                    return
+                # Closing leaves a compact file: after incremental saves, one full save.
+                if room.state == "saved" and not room.saving and room.doc.incremental_saves > 0:
+                    room.state = "pending"
+                if not room.saving and room.state == "saved":
+                    self._finalize_close(room)
+                    break
+                if room.state == "error":
+                    return          # the retry timer saves later; _finish_save closes the room then
+                busy = room.saving
+            if busy:
+                time.sleep(0.02)    # an autosave is writing: its result is recorded first
+                continue
+            self._save(room)        # prepare (locked), write (unlocked), record (locked)
+        self._forget_room(room)
+
+    def _finalize_close(self, room):
+        """With room.lock held: the room is over (saved, no devices)."""
+        room.closed = True
+        room.closing = False
+        self._trash_unused_pictures(room)
+        room.changed.notify_all()
+
+    def _forget_room(self, room):
+        with self.lock:
+            if room.closed and self.rooms.get((room.username, room.rel)) is room:
                 del self.rooms[(room.username, room.rel)]
 
     def _trash_unused_pictures(self, room):

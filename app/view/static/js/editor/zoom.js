@@ -1,6 +1,6 @@
 // VIEW — editor, zoom: pinch, buttons, fixed point under the fingers, page/zoom indicator.
 // EditorView methods (see editor_view.js): here `this` is the editor.
-import { ZOOM_MIN, ZOOM_MAX, touches } from './shared.js';
+import { ZOOM_MIN, ZOOM_MAX, DOUBLE_TAP_MS, TAP_MOVE_PX, PINCH_MIN_MOVE } from './shared.js';
 
 export class ZoomMethods {
   // =====================================================================
@@ -19,8 +19,12 @@ export class ZoomMethods {
       anchor: this.anchorAt(mid.x, mid.y),   // point of the document under the fingers
       factor: 1,
       now: mid,
+      t: performance.now(),
     };
     this.innerEl.style.transformOrigin = `${this.pinch.origin.x}px ${this.pinch.origin.y}px`;
+    // The browser's scrolling (started by the first finger, or still sliding) stops
+    // here: while two fingers are down only the app moves the sheet.
+    this.pagesEl.classList.add('pinching');
   }
 
   movePinch(e) {
@@ -30,20 +34,46 @@ export class ZoomMethods {
     const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
     p.factor = Math.min(ZOOM_MAX / this.zoom, Math.max(ZOOM_MIN / this.zoom, dist / p.dist));
     p.now = { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
-    // During the gesture the image already drawn is scaled (fast); at the end the
-    // pages are redrawn at the new resolution.
-    this.innerEl.style.transform =
-      `translate(${p.now.x - p.mid.x}px, ${p.now.y - p.mid.y}px) scale(${p.factor})`;
-    this.showNav(this.zoom * p.factor);
+    // During the gesture the image already drawn is scaled (fast), once per frame
+    // of the screen however many touch samples arrive; at the end the pages are
+    // redrawn at the new resolution.
+    if (p.frame) return;
+    p.frame = requestAnimationFrame(() => {
+      p.frame = null;
+      if (this.pinch !== p) return;
+      this.innerEl.style.transform = `translate(${p.now.x - p.mid.x}px, ${p.now.y - p.mid.y}px) scale(${p.factor})`;
+      if (!p.navAt || performance.now() - p.navAt > 100) { p.navAt = performance.now(); this.showNav(this.zoom * p.factor); }
+    });
+  }
+
+  // Pinch undone (it was the Pencil with a finger): the sheet goes back as it was.
+  cancelPinch() {
+    const p = this.pinch;
+    this.pinch = null;
+    if (p?.frame) cancelAnimationFrame(p.frame);
+    this.innerEl.style.transform = '';
+    this.pagesEl.classList.remove('pinching');
   }
 
   endPinch() {
     const p = this.pinch;
     this.pinch = null;
+    if (p.frame) cancelAnimationFrame(p.frame);
     this.innerEl.style.transform = '';
-    if (Math.abs(p.factor - 1) < 0.02) {          // two-finger panning only
+    // Scrolling allowed again once the new position is set (below, in this same task).
+    queueMicrotask(() => { if (!this.pinch) this.pagesEl.classList.remove('pinching'); });
+    if (Math.abs(p.factor - 1) < PINCH_MIN_MOVE) {          // two-finger panning only
       this.pagesEl.scrollLeft -= p.now.x - p.mid.x;
       this.pagesEl.scrollTop -= p.now.y - p.mid.y;
+      // Two quick taps with two fingers: back to the page width.
+      const now = performance.now();
+      const tap = now - p.t < DOUBLE_TAP_MS && Math.hypot(p.now.x - p.mid.x, p.now.y - p.mid.y) < TAP_MOVE_PX;
+      if (tap && this.lastTwoTap && now - this.lastTwoTap < DOUBLE_TAP_MS) {
+        this.lastTwoTap = null;
+        if (this.zoom > 1.01) this.setZoom(1, this.anchorAt(p.mid.x, p.mid.y), p.mid.x, p.mid.y);
+      } else {
+        this.lastTwoTap = tap ? now : null;
+      }
       return;
     }
     // The document point that was under the fingers at the start ends up under the fingers now.
@@ -84,7 +114,7 @@ export class ZoomMethods {
       const v = this.els.get(page.id);
       v.el.style.width = page.w * this.scale + 'px';
       v.el.style.height = page.h * this.scale + 'px';
-      for (const c of [v.base, v.ink]) {
+      for (const c of [v.coarse, v.base, v.ink]) {
         if (!c.style.width) continue;
         for (const prop of ['left', 'top', 'width', 'height']) c.style[prop] = parseFloat(c.style[prop]) * k + 'px';
       }
@@ -111,10 +141,21 @@ export class ZoomMethods {
     this.showNav();
   }
 
-  // "Pagina 3 di 8 · 150%" indicator: shown while scrolling or zooming.
+  // "Pagina 3 di 8 · 150%" indicator: shown while scrolling or zooming. Finding
+  // the current page measures every page, so while scrolling it is updated at
+  // most every 100 ms (with one last update when the scrolling stops).
   showNav(zoom = this.zoom) {
     if (!this.pages.length || !this.els.size) return;
-    this.navEl.textContent = `Pagina ${this.currentPageIndex() + 1} di ${this.pages.length} · ${Math.round(zoom * 100)}%`;
+    const now = performance.now();
+    if (now - (this.navAt || 0) < 100) {
+      clearTimeout(this.navLater);
+      this.navLater = setTimeout(() => this.showNav(zoom), 110);
+      return;
+    }
+    this.navAt = now;
+    const index = this.currentPageIndex();
+    this.navEl.textContent = `Pagina ${index + 1} di ${this.pages.length} · ${Math.round(zoom * 100)}%`;
+    this.showPageButton(index);
     this.navEl.classList.add('visible');
     clearTimeout(this.navTimer);
     this.navTimer = setTimeout(() => this.navEl.classList.remove('visible'), 1200);

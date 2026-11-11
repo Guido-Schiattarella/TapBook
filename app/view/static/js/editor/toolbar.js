@@ -1,14 +1,30 @@
 // VIEW — editor, toolbar and messages: save status, connected devices, notices, tool and colour.
 // EditorView methods (see editor_view.js): here `this` is the editor.
 import { icon } from '../format.js';
+import { COLORS, HIGHLIGHTER_COLOR, COLORS_PREF } from './shared.js';
 
 export class ToolbarMethods {
   // =====================================================================
   // Presentation
   // =====================================================================
+  // While a finger moves the sheet (or two fingers zoom) the status waits: the
+  // gesture is never disturbed by news from the computer, which arrive on their own
+  // (nothing here waits for them). It is shown as soon as the fingers are lifted.
   setStatus(text, error = false) {
+    if (this.gesturing()) { this.laterStatus = [text, error]; return; }
+    this.laterStatus = null;
     this.statusEl.textContent = text;
     this.statusEl.classList.toggle('error', error);
+  }
+
+  gesturing() {
+    return !!(this.finger?.moved || this.pinch);
+  }
+
+  // Fingers lifted: the latest status received meanwhile is shown.
+  flushStatus() {
+    const later = this.laterStatus;
+    if (later) this.setStatus(...later);
   }
 
   showStatus(status) {
@@ -79,5 +95,40 @@ export class ToolbarMethods {
 
   showColor() {
     this.colorsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.color === this.color));
+  }
+
+  // --- colour of each tool -------------------------------------------------------------
+  // The highlighter keeps its own colour; pen, shapes and text share one.
+  colorKey() {
+    return this.tool === 'highlighter' ? 'highlighter' : 'ink';
+  }
+
+  get color() {
+    return this.colors[this.colorKey()];
+  }
+
+  set color(value) {
+    this.colors[this.colorKey()] = value;
+    try { localStorage.setItem(COLORS_PREF, JSON.stringify(this.colors)); } catch { /* no storage available */ }
+  }
+
+  loadColors() {
+    const valid = (c) => typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c);
+    let stored = {};
+    try { stored = JSON.parse(localStorage.getItem(COLORS_PREF) || '{}') || {}; } catch { /* defaults */ }
+    this.colors = { ink: valid(stored.ink) ? stored.ink : COLORS[0],
+      highlighter: valid(stored.highlighter) ? stored.highlighter : HIGHLIGHTER_COLOR };
+  }
+
+  // "Incolla" is available only when something was copied.
+  showPaste() {
+    const has = !!this.clipboard;
+    document.getElementById('btn-paste').disabled = !has;
+    document.getElementById('btn-paste').title = has ? 'Incolla (Ctrl+V) sulla pagina in vista' : 'Niente da incollare: cerchia con il lazzo e scegli Copia';
+  }
+
+  // Page button in the toolbar: "3 / 8" (tapping it opens the page chooser).
+  showPageButton(index = this.currentPageIndex()) {
+    document.getElementById('pages-label').textContent = this.pages.length ? `${index + 1} / ${this.pages.length}` : '';
   }
 }

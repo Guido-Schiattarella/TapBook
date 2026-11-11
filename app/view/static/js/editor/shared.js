@@ -12,6 +12,48 @@ export const PDF_OPTIONS = {
 };
 
 export const COLORS = ['#1d1d1f', '#1e5bd8', '#d62d20', '#1f8a3b', '#ffd400', '#ff7ac6'];
+// The highlighter has a colour of its own (yellow to start with); pen, shapes and
+// text share one (the same colour for writing and typing is handy). Remembered on this iPad.
+export const HIGHLIGHTER_COLOR = '#ffd400';
+export const COLORS_PREF = 'notes.colors';
+// Copy and paste: what the lasso selected (or the active text box) is kept on this
+// device, so it can be pasted on another page or in another document.
+export const CLIPBOARD_PREF = 'notes.clipboard';
+export const CLIPBOARD_MAX_BYTES = 3 * 1024 * 1024;
+export const PASTE_OFFSET = 15;        // pasted on the same page: shifted down and right
+// Palm rejection: a finger touch much larger than a fingertip is the hand resting
+// on the screen, and a finger touching while the Pencil writes is the palm too:
+// neither scrolls or zooms the page. Once the Pencil is lifted, fingers are free at once.
+// iOS gives only the larger radius of each touch, so a thumb lying sideways (long
+// contact) is told from a palm by size alone: the limits leave room for it.
+export const PALM_RADIUS = 48;         // CSS pixels: one touch (a fingertip is 10-15, a thumb up to about 45 sideways, a palm 60 and more)
+export const PALM_RADIUS_PINCH = 95;   // two touches together are a pinch unless one is huge
+// A touch starting this close to where the Pencil has just touched (pointer event),
+// this soon, is the Pencil even if Safari does not say so.
+export const PEN_MATCH_MS = 120;
+export const PEN_MATCH_PX = 24;
+// The Pencil counts as still on the screen at most this long without any news from it.
+export const PEN_LOST_MS = 1500;
+// Gestures with one finger (when the finger does not draw): a quick horizontal
+// swipe turns the page; two taps zoom in on that point and back.
+export const SWIPE_MIN_PX = 70;
+export const SWIPE_MAX_MS = 400;
+export const SWIPE_RATIO = 1.8;        // horizontal movement at least this many times the vertical one
+export const DOUBLE_TAP_MS = 320;
+export const TAP_MOVE_PX = 24;
+export const TAP_ZOOM = 2;             // zoom reached by the double tap
+// Where the reader is: sent to the computer a moment after scrolling stops, so
+// the document opens at the same page next time (on any device).
+export const POSITION_DELAY_MS = 800;
+export const THUMB_WIDTH = 132;        // CSS pixels of the thumbnails in the page chooser
+// One finger scrolls with the browser's own scrolling; two fingers zoom and move (the app).
+export const PINCH_MIN_MOVE = 0.02;      // zoom change under which two fingers only moved the sheet
+// Holding a finger still on the page for LONG_PRESS_MS opens the menu (copy, paste…).
+export const LONG_PRESS_MS = 500;
+export const LONG_PRESS_MOVE_PX = 10;
+// Copying items writes this mark to the system clipboard: pasting with Ctrl+V
+// then knows the items are meant, not whatever text was copied before.
+export const CLIP_MARK = 'tapbook-clipboard:';
 export const HIGHLIGHT_ALPHA = 0.35;
 export const HIGHLIGHTER_FACTOR = 6;  // the highlighter is 6 times wider than the pen
 export const MIN_POINT_DIST = 0.4;    // PDF points between two consecutive samples
@@ -64,6 +106,10 @@ export const SELECTION_PAD = 6;       // margin of the selection box (PDF points
 export const TYPING_DELAY = 400;      // ms: typed text is sent in small chunks
 export const RETRY_DELAY = 2000;      // ms: send again if the Wi-Fi network does not answer
 export const SLOW_REQUEST_MS = 10000; // ms: beyond this a request is shown as "not answering"
+// ms: beyond this an operation is sent again on a new connection (the computer
+// recognises a repeated operation by its number and does not apply it twice)
+export const OP_TIMEOUT_MS = 20000;
+export const LISTEN_TIMEOUT_MS = 45000; // the computer keeps /listen open for up to 25 s
 export const LEAVE_WAIT_MS = 8000;    // ms: leaving waits this long for the changes on their way
 export const ZOOM_MIN = 0.5;
 export const ZOOM_MAX = 10;
@@ -72,7 +118,19 @@ export const ZOOM_MAX = 10;
 // visible part of the page is drawn, plus a margin, and redrawn while scrolling.
 // This keeps strokes and layout visible and sharp at any zoom.
 export const MAX_CANVAS_PIXELS = 8 * 1024 * 1024;
-export const REGION_MARGINS = [0.5, 0.25, 0];  // margin around the visible part (fraction of the screen)
+// Margin around the visible part, as a fraction of the screen: a share of the
+// width at the sides, and all the pixels left under MAX_CANVAS_PIXELS above and
+// below (up to REGION_MAX_AHEAD screens), mostly in the direction of the scrolling.
+export const REGION_SIDE = 0.15;
+export const REGION_MAX_AHEAD = 1.0;
+export const REGION_AHEAD_SHARE = 0.7;     // share of the vertical margin put ahead of the movement
+// The region is drawn again when the visible part comes this close (fraction of
+// the margin) to its edge, before it leaves it.
+export const REGION_GUARD = 0.4;
+// Under the sharp regions, the whole page is kept at a low resolution (at most this
+// many pixels): while scrolling with strong zoom there is never a white hole, just
+// a slightly blurred background until the sharp one arrives.
+export const COARSE_PIXELS = 1.5 * 1024 * 1024;
 // Pixels of all the pages' canvases together (4 bytes each: 40 M ≈ 160 MB), well
 // below the limit Safari on the iPad sets for a page's canvases.
 export const CANVAS_BUDGET = 40 * 1024 * 1024;

@@ -1,8 +1,7 @@
 // VIEW — editor, communication with the controller on the computer: operation queue, responses, notifications (listen) and model events.
 // EditorView methods (see editor_view.js): here `this` is the editor.
-import * as pdfjsLib from '/static/vendor/pdfjs/pdf.min.mjs';
 import { ApiError, NetworkError, apiGet, apiPost, reportError } from '../api.js';
-import { PDF_OPTIONS, RETRY_DELAY, SLOW_REQUEST_MS } from './shared.js';
+import { LISTEN_TIMEOUT_MS, OP_TIMEOUT_MS, PDF_OPTIONS, RETRY_DELAY, SLOW_REQUEST_MS } from './shared.js';
 import { tabId, renewTabId } from '../device.js';
 
 export class SyncMethods {
@@ -12,20 +11,25 @@ export class SyncMethods {
   // Queues a request: requests leave in order, one at a time. If the network
   // does not answer, retry; if the computer closed the document for inactivity,
   // reopen it (from the current version) and send the request again.
+  // Every request is sent with the session current when it leaves: after a reopening
+  // the requests already queued (for example the second stroke of an "=", drawn
+  // while the first one was reopening the document) go with the new session. Only
+  // when another document is opened (or the editor is closed) are they dropped.
   // quiet: request that does not change the document (e.g. lasso selection).
   enqueue(request, { quiet = false } = {}) {
     if (this.blocked) return Promise.resolve();
     this.inFlight++;
     if (!quiet) this.setStatus('Modifiche…');
-    let session = this.session;
+    const openId = this.openId;
     let reopened = false;
     this.queue = this.queue.then(async () => {
-      while (session === this.session && !this.blocked) {
+      while (openId === this.openId && this.session && !this.blocked) {
+        const session = this.session;
         // A request that takes too long is shown, instead of a "Modifiche…" that never ends.
         const slow = setTimeout(() => this.setStatus('Il computer non risponde, attendo…', true), SLOW_REQUEST_MS);
         try {
           const result = await request(session);
-          if (session === this.session) this.applyResult(result);
+          if (openId === this.openId && session === this.session) this.applyResult(result);
           return;
         } catch (e) {
           if (e instanceof ApiError && e.status === 410 && !reopened) {
@@ -33,8 +37,14 @@ export class SyncMethods {
             // Replaced by another tab with the same identifier (a duplicated tab):
             // this tab takes a new one, so the two do not keep replacing each other.
             if (e.data.reason === 'replaced') renewTabId();
-            await this.reopen();
-            session = this.session;
+            try {
+              await this.reopen();
+            } catch (err) {
+              if (!(err instanceof NetworkError)) throw err;
+              reopened = false;          // no network: try the reopening again shortly
+              this.setStatus('Rete assente, riprovo…', true);
+              await new Promise((r) => setTimeout(r, RETRY_DELAY));
+            }
             continue;
           }
           if (e instanceof ApiError && e.status) { this.handleError(e); return; }
@@ -60,8 +70,11 @@ export class SyncMethods {
     return this.queue;
   }
 
+  // Every operation gets a number, once: if the answer is lost and the operation
+  // is sent again, the computer recognises it and does not apply it twice.
   send(op, options) {
-    return this.enqueue((session) => apiPost('/api/edit/op', { session, op }), options);
+    op.seq = this.opSeq = (this.opSeq || 0) + 1;
+    return this.enqueue((session) => apiPost('/api/edit/op', { session, op }, { timeout: OP_TIMEOUT_MS }), options);
   }
 
   handleError(e) {
@@ -84,7 +97,7 @@ export class SyncMethods {
   async listen(session) {
     while (session === this.session) {
       try {
-        const result = await apiGet('/api/edit/listen', { session });
+        const result = await apiGet('/api/edit/listen', { session }, { timeout: LISTEN_TIMEOUT_MS });
         if (session === this.session) this.applyResult(result);
       } catch (e) {
         if (session !== this.session) return;
@@ -98,15 +111,27 @@ export class SyncMethods {
     }
   }
 
-  // Reopens the document: the view receives the current version from the
-  // controller (with the changes made meanwhile by other devices or on the computer).
+  // Reopens the document (closed by the computer after a long pause): the view
+  // receives the current version from the controller, with the changes made
+  // meanwhile by other devices or on the computer. The pages on screen stay where
+  // they are and only what changed is drawn again: a stroke being written, the
+  // strokes on their way and the position are kept (rebuilding everything lost the
+  // stroke being written at that moment).
   async reopen() {
     const data = await apiPost('/api/open', { path: this.path, device: tabId() });
     if (data.view !== 'editor') throw new Error('Documento non più disponibile');
-    const { queue, inFlight, pendingStrokes } = this;
-    await this.show(data);
-    Object.assign(this, { queue, inFlight, pendingStrokes });  // changes on their way keep going
-    this.pages.forEach((p) => this.drawInk(p));
+    this.session = data.session;
+    await this.loadBackgrounds(data.backgrounds || {});      // only those this device lacks
+    this.layout = data.layout;
+    this.layouts = data.layouts || [];
+    this.showLayout();
+    this.syncPages(data.pages, null);
+    const g = this.gesture;
+    if (g?.page) g.page = this.page(g.page.id) || g.page;   // the stroke being written goes on
+    this.setUndoState(data.canUndo, data.canRedo);
+    this.showDevices(data.devices);
+    this.lastStatus = data.status;
+    this.listen(this.session);
     this.notice('Documento riaperto dalla versione attuale');
   }
 
@@ -141,6 +166,15 @@ export class SyncMethods {
       case 'textAdded':
         page.texts.splice(ev.index, 0, ev.text);
         this.renderTexts(page);
+        if (this.fitNewText && ev.text.text) {
+          // Pasted text: the box takes the height the text needs on this screen.
+          this.fitNewText = false;
+          const el = this.textboxOf(page.id, ev.text.id);
+          if (el) {
+            const h = this.measureText(ev.text, el.querySelector('textarea'));
+            if (Math.abs(h - ev.text.h) > 0.5) { ev.text.h = h; this.placeTextbox(el, ev.text); this.send({ type: 'changeText', page: page.id, id: ev.text.id, h }); }
+          }
+        }
         if (this.focusNewText) { this.focusNewText = false; this.focusText(ev.text.id); }
         break;
       case 'textRemoved':

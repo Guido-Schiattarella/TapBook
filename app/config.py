@@ -36,6 +36,9 @@ DEFAULTS = {
     "firewall": "auto",
     "update_check": "true",
     "update_repository": "",
+    "tls_cert": "",
+    "tls_key": "",
+    "behind_proxy": "false",
 }
 
 
@@ -53,6 +56,9 @@ class Config:
     firewall: str = "auto"
     update_check: bool = True
     update_repository: str = ""
+    tls_cert: Path | None = None        # own certificate (e.g. Let's Encrypt); None = the app's own
+    tls_key: Path | None = None
+    behind_proxy: bool = False          # a reverse proxy (Caddy, nginx) in front handles HTTPS
 
 
 def _path(value: str) -> Path:
@@ -73,21 +79,35 @@ def _firewall_mode(value: str) -> str:
     return "on" if value in ("on", "true", "yes", "si", "sì", "1") else "auto"
 
 
-def load_config() -> Config:
-    values = dict(DEFAULTS)
-    ini_path = Path(os.environ.get("NOTES_CONFIG", PROJECT_DIR / "config.ini"))
+def config_path() -> Path:
+    return Path(os.environ.get("NOTES_CONFIG", PROJECT_DIR / "config.ini"))
+
+
+def raw_values() -> dict:
+    """Every setting as written, with where it comes from:
+    {name: (value, "env" | "ini" | "default")}."""
+    values = {key: (value, "default") for key, value in DEFAULTS.items()}
+    ini_path = config_path()
     if ini_path.is_file():
         parser = configparser.ConfigParser()
         parser.read(ini_path, encoding="utf-8")
         for section in parser.sections():
             for key, value in parser.items(section):
                 if key in values:
-                    values[key] = value
+                    values[key] = (value, "ini")
     for key in values:
         env = os.environ.get("NOTES_" + key.upper())
         if env is not None:
-            values[key] = env
+            values[key] = (env, "env")
+    return values
 
+
+def _optional_path(value: str) -> Path | None:
+    return _path(value) if value.strip() else None
+
+
+def load_config() -> Config:
+    values = {key: value for key, (value, _) in raw_values().items()}
     return Config(
         notes_root=_path(values["notes_root"]),
         data_dir=_path(values["data_dir"]),
@@ -101,4 +121,7 @@ def load_config() -> Config:
         firewall=_firewall_mode(values["firewall"]),
         update_check=_flag(values["update_check"]),
         update_repository=values["update_repository"].strip(),
+        tls_cert=_optional_path(values["tls_cert"]),
+        tls_key=_optional_path(values["tls_key"]),
+        behind_proxy=_flag(values["behind_proxy"]),
     )

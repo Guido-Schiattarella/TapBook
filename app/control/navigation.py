@@ -23,9 +23,10 @@ class NavigationController:
     def editor_view(self, username: str, rel: str, page=None, device=None) -> dict:
         result = {"view": "editor", **self.editing.open(username, rel, device)}
         result["color"] = self.library.document_color(username, result["path"])
-        # Opened from a search result: the view goes to the matching page.
+        # Opened from a search result: the view goes to the matching page (instead
+        # of where the reader stopped last time).
         if isinstance(page, int) and not isinstance(page, bool) and 0 <= page < len(result["pages"]):
-            result["startPage"] = page
+            result["startPage"], result["startOffset"] = page, 0.0
         return result
 
     def open(self, username: str, rel: str, page=None, device=None) -> dict:
@@ -58,8 +59,10 @@ class NavigationController:
         """New document (name, colour, layout of the first page): opens right away in the editor."""
         return self.editor_view(username, self.library.create_document(username, rel, name, layout, color))
 
+    CLOSING_WAIT = 20.0      # seconds granted to a document still being written after its last device left
+
     def _not_open(self, username: str, rel: str):
-        if self.editing.is_open(username, rel):
+        if self.editing.is_open(username, rel, wait=self.CLOSING_WAIT):
             raise InvalidInput("Il documento è aperto in modifica su un dispositivo: chiudilo prima")
 
     def rename(self, username: str, rel: str, name) -> dict:

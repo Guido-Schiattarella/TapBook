@@ -73,16 +73,17 @@ def _reset(disable=False, kill=False):
 
 
 def save_document(path: Path, layer: dict, base_revision: str, pagecache: Path,
-                  pictures_dir: Path | None = None):
+                  pictures_dir: Path | None = None, prev_layer: dict | None = None, full: bool = True):
     """Same as pdf_store.save_document (same result and exceptions), written by
     the separate process."""
+    kwargs = dict(pictures_dir=pictures_dir, prev_layer=prev_layer, full=full)
     for attempt in range(2):
         executor = _get_executor()
         if executor is None:
             break
         try:
             return executor.submit(pdf_store.save_document, path, layer, base_revision, pagecache,
-                                   pictures_dir=pictures_dir).result(timeout=WRITE_TIMEOUT)
+                                   **kwargs).result(timeout=WRITE_TIMEOUT)
         except FutureTimeout:
             # Stuck writer: stopped, and from now on the server writes by itself.
             _reset(disable=True, kill=True)
@@ -91,7 +92,7 @@ def save_document(path: Path, layer: dict, base_revision: str, pagecache: Path,
             # Writer process lost (or unusable): a new one, then give up on it. The
             # errors of the writing itself (file changed, disk full…) arrive as they are.
             _reset(disable=attempt == 1)
-    return pdf_store.save_document(path, layer, base_revision, pagecache, pictures_dir=pictures_dir)
+    return pdf_store.save_document(path, layer, base_revision, pagecache, **kwargs)
 
 
 def shutdown():

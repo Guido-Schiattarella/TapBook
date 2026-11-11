@@ -6,6 +6,7 @@ passes username, password and IP address and gets back a user or an AuthError.
 """
 import hashlib
 import hmac
+import logging
 import threading
 import time
 from pathlib import Path
@@ -20,6 +21,10 @@ LOCK_MINUTES = 5
 LOGIN_ATTEMPTS_PER_IP = (10, 300)       # 10 attempts every 5 minutes
 REGISTRATIONS_PER_IP = (5, 3600)        # 5 account all'ora
 REGISTER_ATTEMPTS_PER_IP = (30, 3600)   # 30 sign-up attempts per hour (failed ones included)
+
+# Failed logins are written to the server log ("tapbook logs"), so that tools
+# like fail2ban on a VPS can block the address that keeps trying.
+log = logging.getLogger("tapbook.auth")
 
 INVALID_USERNAME = ("Nome utente non valido: 3-32 caratteri tra lettere minuscole, "
                     "numeri, '_' e '-', iniziando con una lettera o un numero.")
@@ -140,8 +145,10 @@ class AuthController:
         return self.store.count_users() == 0
 
     def registration_open(self) -> bool:
-        # The first account can always be created, even with sign-up turned off.
-        return self.allow_registration or self.needs_first_user()
+        # With sign-up turned off no account is ever created from the web, not even
+        # the first one: on a server reachable from the Internet, whoever got there
+        # first would own it. Accounts are then created from the terminal.
+        return self.allow_registration
 
     def session_user(self, user_id, username, fingerprint):
         """The session user, only if it still exists with the same name and the
@@ -161,6 +168,7 @@ class AuthController:
         # The attempt is counted right away (and removed if it succeeds): even many
         # parallel requests cannot go past the per-address limit.
         if not self.login_throttle.attempt(ip):
+            log.warning("Accesso bloccato (troppi tentativi) da %s", ip)
             raise AuthError("Troppi tentativi. Riprova tra qualche minuto.")
         user = self.store.get_user(username) if valid_username(username) else None
         if (user["locked"] if user else self.unknown_failures.locked(username)):
@@ -176,6 +184,8 @@ class AuthController:
         else:
             verify_password(password, DUMMY_HASH)  # same response time: does not reveal who exists
             self.unknown_failures.record(username)
+        # repr(): a name with line breaks cannot forge fake lines in the log.
+        log.warning("Accesso non riuscito per l'utente %r da %s", username[:32], ip)
         raise AuthError("Nome utente o password errati.")
 
     # --- sign-up ----------------------------------------------------------------
@@ -235,6 +245,7 @@ class AuthController:
         if new == current:
             raise InvalidInput("La nuova password deve essere diversa da quella attuale.")
         self.store.set_password(username, hash_password(new))
+        self.store.delete_devices(username)     # TapBook Sync must be paired again
         return session_fingerprint(self.store.get_user(username)["password_hash"])
 
     # --- administration from the terminal ---------------------------------------------
@@ -256,6 +267,7 @@ class AuthController:
         if problem := password_problem(password, username):
             raise InvalidInput(problem)
         self.store.set_password(username, hash_password(password))
+        self.store.delete_devices(username)     # TapBook Sync must be paired again
 
     def delete_user(self, username: str):
         """Deletes the profile; the documents folder stays on disk."""

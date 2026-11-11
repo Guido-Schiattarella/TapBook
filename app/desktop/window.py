@@ -136,6 +136,41 @@ class PasswordDialog(Dialog):
             self.entry.focus_set()
 
 
+class ConfigDialog(Dialog):
+    """Every setting with its value and origin (as «tapbook config show»), and
+    the export of a config.ini to copy to another server (e.g. a VPS)."""
+
+    def __init__(self, parent, fonts):
+        from ..cli import config_show
+        super().__init__(parent, fonts, "Configurazione",
+                         "Le impostazioni in uso. «Esporta» salva un config.ini completo da copiare su un altro "
+                         "server (per esempio un VPS): la chiave delle sessioni e i certificati non vengono copiati.")
+        text = tk.Text(self.body, height=18, width=72, font=fonts.mono, bg=Palette.surface_2, fg=Palette.text_2,
+                       relief="flat", bd=8, wrap="none", highlightthickness=0)
+        text.insert("1.0", config_show())
+        text.config(state="disabled")
+        text.pack(fill="both", expand=True, pady=(12, 0))
+        self.message = tk.Label(self.body, text="", font=fonts.small, fg=Palette.ok, bg=Palette.surface, anchor="w")
+        self.message.pack(fill="x", pady=(6, 0))
+        self.add_buttons("Chiudi", "Esporta config.ini…")
+        self.minsize(640, 10)
+
+    def confirm(self):
+        from tkinter import filedialog
+        from ..cli import config_export
+        target = filedialog.asksaveasfilename(parent=self, title="Esporta la configurazione",
+                                              initialfile="config.ini", defaultextension=".ini",
+                                              filetypes=[("Configurazione", "*.ini")])
+        if not target:
+            return
+        try:
+            Path(target).write_text(config_export(), encoding="utf-8")
+        except OSError as e:
+            self.message.config(text=f"Non salvato: {e}", fg=Palette.danger)
+            return
+        self.message.config(text=f"Salvato in {target}", fg=Palette.ok)
+
+
 class ControlPanel:
     def __init__(self, root: tk.Tk, config, check_updates: bool = True):
         self.root, self.config = root, config
@@ -144,7 +179,7 @@ class ControlPanel:
         self.state = "stopped"
         self.info = {}
         self.closing = False
-        root.title("TapBook")
+        root.title("TapBook Server")
         root.configure(bg=Palette.bg)
         root.minsize(520, 600)
         root.geometry("560x700")
@@ -166,8 +201,8 @@ class ControlPanel:
         if LOGO.exists():
             self.logo = tk.PhotoImage(file=str(LOGO)).subsample(5)
             header.create_image(26, 48, image=self.logo, anchor="w")
-        header.create_text(92, 38, text="TapBook", font=f.title, fill="#ffffff", anchor="w")
-        header.create_text(93, 64, text=f"Pannello del server · versione {__version__}", font=f.subtitle,
+        header.create_text(92, 38, text="TapBook Server", font=f.title, fill="#ffffff", anchor="w")
+        header.create_text(93, 64, text=f"Pannello di controllo · versione {__version__}", font=f.subtitle,
                            fill="#e3edff", anchor="w")
 
         body = tk.Frame(self.root, bg=Palette.bg)
@@ -236,8 +271,10 @@ class ControlPanel:
         self.rows["folder"].config(text=str(self.config.notes_root))
         self.rows["firewall"].config(text="—")
         self.rows["registration"].config(text="attiva" if self.config.allow_registration else "disattivata")
-        RoundButton(card.body, "Apri la cartella dei documenti", self.open_folder, f, "ghost"
-                    ).pack(anchor="w", pady=(8, 0))
+        buttons = tk.Frame(card.body, bg=Palette.surface)
+        buttons.pack(fill="x", pady=(8, 0))
+        RoundButton(buttons, "Apri la cartella dei documenti", self.open_folder, f, "ghost").pack(side="left")
+        RoundButton(buttons, "Configurazione", self.show_config, f, "ghost").pack(side="left", padx=8)
 
         # Server messages
         card = Card(body, f, "Messaggi")
@@ -276,10 +313,12 @@ class ControlPanel:
         if running and urls:
             self.url_label.config(text=urls[0], fg=Palette.accent)
             note = "Aprilo in Safari sull'iPad, sulla stessa rete Wi-Fi."
-            if self.info.get("https"):
+            if self.info.get("https") and not self.info.get("own_certificate"):
                 note += " La prima volta installa il certificato dalla pagina di accesso."
             if self.info.get("first_user"):
-                note += " Nessun utente ancora: crea il primo account dalla pagina che si apre."
+                note += (" Nessun utente ancora: crea il primo account dalla pagina che si apre."
+                         if self.info.get("registration") else
+                         " Nessun utente ancora: crealo nel terminale con «tapbook user add <nome>».")
             self.url_note.config(text=note)
         elif running:
             self.url_label.config(text=self.info.get("local_url", ""), fg=Palette.accent)
@@ -374,6 +413,9 @@ class ControlPanel:
     def open_local(self):
         if self.info.get("local_url"):
             webbrowser.open(self.info["local_url"])
+
+    def show_config(self):
+        ConfigDialog(self.root, self.fonts).run()
 
     def open_folder(self):
         folder = self.config.notes_root

@@ -15,7 +15,9 @@ import secrets
 from pathlib import Path
 from types import SimpleNamespace
 
-from flask import Flask
+from flask import Flask, request
+from flask.sessions import SecureCookieSessionInterface
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from ..control.account import AccountController
 from ..control.auth import AuthController
@@ -39,22 +41,39 @@ def _load_secret_key(data_dir: Path) -> bytes:
     return key_file.read_bytes()
 
 
+class ProxySessionInterface(SecureCookieSessionInterface):
+    """Behind a proxy the session cookie is Secure only when the device really
+    reached the proxy over HTTPS (X-Forwarded-Proto): with a proxy in plain HTTP
+    (for example inside a VPN such as Tailscale, which already encrypts) a Secure
+    cookie would be thrown away by the browser and no login would work."""
+    def get_cookie_secure(self, app):
+        return request.is_secure
+
+
 def create_app(config, auth: AuthController, library: LibraryController,
                navigation: NavigationController, editing: EditController,
-               account: AccountController, diagnostics: DiagnosticsController) -> Flask:
+               account: AccountController, diagnostics: DiagnosticsController, sync=None) -> Flask:
     app = Flask(__name__)
     app.config.update(
         SECRET_KEY=_load_secret_key(config.data_dir),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Strict",
         SESSION_COOKIE_NAME="notes_session",
-        SESSION_COOKIE_SECURE=config.https,   # with HTTPS the cookie never travels in clear text
+        # With HTTPS the cookie never travels in clear text (behind a proxy: see
+        # ProxySessionInterface).
+        SESSION_COOKIE_SECURE=config.https,
         PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=config.session_hours),
         MAX_CONTENT_LENGTH=config.max_upload_mb * 1024 * 1024,
     )
     app.extensions["tapbook"] = SimpleNamespace(config=config, auth=auth, library=library,
                                                 navigation=navigation, editing=editing, account=account,
-                                                diagnostics=diagnostics)
+                                                diagnostics=diagnostics, sync=sync)
+    if config.behind_proxy:
+        # Address and protocol of the device, as seen by the proxy in front (one
+        # proxy only). Without behind_proxy these headers are ignored: anybody
+        # could write them to dodge the per-address login limit.
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+        app.session_interface = ProxySessionInterface()
     app.after_request(security_headers)
     register_all(app)
     return app

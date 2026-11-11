@@ -207,12 +207,26 @@ class BackgroundStore:
             self._save_manifest(folder, manifest)     # also marks the document as recently used
             return refs
 
+    def record(self, doc_id: str, revision: str, refs: list):
+        """The app just wrote the file: its pages' backgrounds are the ones given
+        (only the notes changed), so the next opening finds this revision in the
+        manifest and does not need to read the clean PDF to compute them."""
+        folder = self._dir(doc_id)
+        with _doc_lock(str(folder)):
+            manifest = self._manifest(folder)
+            candidate = {**manifest, "revision": revision, "refs": refs}
+            if not folder.is_dir() or not self._refs_valid(candidate):
+                return                            # unknown backgrounds: computed at the next opening
+            self._save_manifest(folder, candidate)
+
     @staticmethod
     def _refs_valid(manifest) -> bool:
         ids = {b["id"] for b in manifest["backgrounds"]}
         return all(r is None or (isinstance(r, dict) and r.get("id") in ids) for r in manifest["refs"])
 
     def _compute(self, folder, manifest, clean, page_layouts, tidy):
+        if callable(clean):
+            clean = clean()                    # read only now that it is really needed
         doc = pymupdf.open(stream=clean, filetype="pdf")
         try:
             fps = page_fingerprints(doc)

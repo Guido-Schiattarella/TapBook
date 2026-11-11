@@ -179,17 +179,19 @@
       <div class="segment">
         <button id="btn-undo" class="tool" title="Annulla" disabled><svg class="i"><use href="#i-undo"></use></svg></button>
         <button id="btn-redo" class="tool" title="Ripristina" disabled><svg class="i"><use href="#i-redo"></use></svg></button>
+        <button id="btn-paste" class="tool" title="Incolla" disabled><svg class="i"><use href="#i-paste"></use></svg></button>
       </div>
       <div class="segment">
         <button id="btn-zoom-out" class="tool" title="Riduci"><svg class="i"><use href="#i-zoom-out"></use></svg></button>
         <button id="btn-zoom-in" class="tool" title="Ingrandisci"><svg class="i"><use href="#i-zoom-in"></use></svg></button>
       </div>
       <div class="segment">
+        <button id="btn-pages" class="tool labeled" title="Pagina in vista: tocca per scegliere la pagina"><svg class="i"><use href="#i-pages"></use></svg><span id="pages-label"></span></button>
         <button id="btn-layout" class="tool labeled" title="Layout delle pagine che aggiungerai: tocca per cambiarlo"><svg class="i"><use href="#i-layout"></use></svg><span id="layout-label"></span></button>
         <button id="btn-add-page" class="tool" title="Aggiungi pagina dopo quella corrente"><svg class="i"><use href="#i-page-add"></use></svg></button>
         <button id="btn-del-page" class="tool" title="Elimina pagina corrente"><svg class="i"><use href="#i-page-del"></use></svg></button>
       </div>
-      <label class="toggle" title="Permetti di disegnare anche con il dito">
+      <label class="toggle" title="Permetti di disegnare anche con il dito (spento: un dito scorre, due dita zoomano, uno scorrimento rapido di lato cambia pagina, due tocchi ingrandiscono)">
         <input type="checkbox" id="finger-draw"><svg class="i"><use href="#i-hand"></use></svg>
       </label>
       <span id="devices" class="devices" hidden></span>
@@ -228,6 +230,21 @@
     <div class="dialog-actions">
       <button type="button" id="newdoc-cancel" class="ghost">Annulla</button>
       <button type="submit" class="primary">Crea</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="page-dialog" class="dialog page-dialog">
+  <form method="dialog" id="page-form">
+    <h2>Vai alla pagina</h2>
+    <div class="page-jump">
+      <input id="page-number" type="number" min="1" step="1" inputmode="numeric" aria-label="Numero di pagina">
+      <span id="page-count" class="muted"></span>
+      <button type="submit" class="primary">Vai</button>
+    </div>
+    <div id="page-grid" class="page-grid"></div>
+    <div class="dialog-actions">
+      <button type="button" id="page-cancel" class="ghost">Chiudi</button>
     </div>
   </form>
 </dialog>

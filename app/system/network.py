@@ -21,9 +21,30 @@ def local_addresses() -> list[str]:
         return []
 
 
+def _interface_addresses() -> set[str]:
+    """IPv4 address of every network interface (Linux): also those of a VPN such
+    as Tailscale or WireGuard, which are not the main network."""
+    try:
+        import fcntl
+        import struct
+    except ImportError:              # Windows: getaddrinfo already lists every interface
+        return set()
+    found = set()
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        for _, name in socket.if_nameindex():
+            try:
+                packed = fcntl.ioctl(s.fileno(), 0x8915,     # SIOCGIFADDR
+                                     struct.pack("256s", name.encode()[:15]))
+                found.add(socket.inet_ntoa(packed[20:24]))
+            except OSError:
+                continue             # interface without an IPv4 address
+    return found
+
+
 def all_addresses() -> list[str]:
-    """All IPv4 addresses of the computer (for the certificate: still valid if the network changes)."""
-    addrs = set(local_addresses())
+    """All IPv4 addresses of the computer (for the certificate: valid on every
+    network the server is reached from, VPN included, and if the network changes)."""
+    addrs = set(local_addresses()) | _interface_addresses()
     try:
         addrs |= {i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
     except OSError:

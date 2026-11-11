@@ -50,16 +50,27 @@ class OpenDocument:
         self.pagecache = pagecache
         self.pictures_dir = pictures_dir   # pictures/<document>: image files
         self.backgrounds = backgrounds     # stored backgrounds (see backgrounds.py)
-        clean, layer, revision = pdf_store.load_document(path)
+        clean, layer, revision = pdf_store.load_document(path, pagecache)
         self.revision = revision        # version of the file on disk
         self.doc_id = layer["docId"]
         self.next_layout = layer["nextLayout"]   # layout of the pages that will be added
         self.pages = layer["pages"]     # pagine attuali, in ordine
         self.all_pages = {p["id"]: p for p in self.pages}  # deleted ones too (undo)
         # Nobody has the document open yet: backgrounds no longer used can be removed.
-        self._assign_backgrounds(clean, self.pages, tidy=True)
+        # From the layer cache there are no clean bytes yet: they are read only if
+        # the stored backgrounds do not match this revision (see BackgroundStore.prepare).
+        self._assign_backgrounds(clean if clean is not None else (lambda: pdf_store.clean_bytes(path)),
+                                 self.pages, tidy=True)
         self._listeners = []
         self.last_saved = path.read_bytes()   # the PDF as the last save left it
+        # What the file holds, item by item: the next save writes only the difference
+        # (incremental). The first save is a full one (the file may come from an
+        # earlier version or another program: page ids and the layer file get written).
+        # A copy: the live pages share nothing with it, otherwise the comparison
+        # would never see a change.
+        self.saved_layer = copy.deepcopy(layer)
+        self.full_save_due = not layer.get("app", False)
+        self.incremental_saves = 0
         self._take_snapshot()
 
     # --- notifications -----------------------------------------------------------------
@@ -256,6 +267,7 @@ class OpenDocument:
         longer match."""
         clean, disk, revision = pdf_store.load_document(self.path)
         disk_pages = disk["pages"]
+        self.full_save_due = True              # the file changed under us: the next save rewrites it whole
         if len(disk_pages) != len(self.snapshot):
             raise PageStructureChanged()
         # Reordered pages? An app note appearing on a different page than at the
@@ -307,9 +319,10 @@ class OpenDocument:
         self._take_snapshot_from_disk(disk_pages)
         self._notify("backgroundChanged", pages=self.view_pages(), backgrounds=self.background_sizes())
 
-    def _assign_backgrounds(self, clean: bytes, file_pages: list, tidy: bool) -> list:
+    def _assign_backgrounds(self, clean, file_pages: list, tidy: bool) -> list:
         """Background reference of every page of the file (file_pages: the page at
-        each position of the file, or None if not known)."""
+        each position of the file, or None if not known). clean: the PDF without
+        notes, or a function that reads it when needed."""
         page_layouts = [(p["layout"], p["w"], p["h"]) if p and p.get("layout") else None for p in file_pages]
         refs = self.backgrounds.prepare(self.doc_id, clean, page_layouts, self.revision, tidy)
         for p, ref in zip(file_pages, refs):
@@ -340,7 +353,9 @@ class OpenDocument:
     # written: prepare_save takes a copy of the notes (quick, with the document
     # locked), write_save writes the PDF from that copy (slow, without the lock,
     # while changes go on) and finish_save records the result (locked again).
-    def prepare_save(self) -> dict:
+    def prepare_save(self, full: bool = False) -> dict:
+        """full: write the whole file (closing); otherwise only what changed since
+        the last save, when possible."""
         def copy_page(p):
             # Every item is copied: later changes replace an item's values (update)
             # or add and remove items, never touch the copy being written.
@@ -349,31 +364,48 @@ class OpenDocument:
                     "layout": p.get("layout"), "images": [dict(x) for x in p.get("images", [])]}
         layer = {"docId": self.doc_id, "nextLayout": self.next_layout,
                  "pages": [copy_page(p) for p in self.pages]}
-        return {"layer": layer, "revision": self.revision}
+        full = full or self.full_save_due or self.incremental_saves >= pdf_store.INCREMENTAL_LIMIT
+        return {"layer": layer, "revision": self.revision, "full": full,
+                "prev": None if full else self.saved_layer}
 
     def write_save(self, job: dict):
         """Writes the prepared copy (raises pdf_store.RevisionMismatch like save)."""
         return save_worker.save_document(self.path, job["layer"], job["revision"], self.pagecache,
-                                         pictures_dir=self.pictures_dir)
+                                         pictures_dir=self.pictures_dir, prev_layer=job["prev"], full=job["full"])
 
     def finish_save(self, job: dict, result):
-        self.revision, self.last_saved = result
+        self.revision, self.last_saved, full = result     # full: what was really done (an incremental
+        self._record_saved(job["layer"], full, copied=True)   # save may have become a full one)
         self._after_save(job["layer"]["pages"])
 
+    def _record_saved(self, layer: dict, full: bool, copied: bool = False):
+        """copied: the layer is already a copy (prepare_save); _layer() shares the
+        live items and is copied here."""
+        self.saved_layer = layer if copied else copy.deepcopy(layer)
+        if full:
+            self.full_save_due = False
+            self.incremental_saves = 0
+        else:
+            self.incremental_saves += 1
+
     def save(self):
-        """Writes the document to the PDF on disk. Raises pdf_store.RevisionMismatch
+        """Writes the whole document to the PDF on disk. Raises pdf_store.RevisionMismatch
         if the file was changed by another program in the meantime."""
-        self.revision, self.last_saved = pdf_store.save_document(
-            self.path, self._layer(), self.revision, self.pagecache, pictures_dir=self.pictures_dir)
+        layer = self._layer()
+        self.revision, self.last_saved, _ = pdf_store.save_document(
+            self.path, layer, self.revision, self.pagecache, pictures_dir=self.pictures_dir)
+        self._record_saved(layer, True)
         self._after_save()
 
     def overwrite(self, backup_to: Path):
         """The iPad's version wins: the file on disk is replaced starting from the
         last PDF saved by the iPad; the computer's version is first copied to
         `backup_to`."""
-        self.revision, self.last_saved = pdf_store.save_document(
-            self.path, self._layer(), self.revision, self.pagecache,
+        layer = self._layer()
+        self.revision, self.last_saved, _ = pdf_store.save_document(
+            self.path, layer, self.revision, self.pagecache,
             base_bytes=self.last_saved, backup_to=backup_to, pictures_dir=self.pictures_dir)
+        self._record_saved(layer, True)
         self._after_save()
 
     def _after_save(self, saved_pages=None):
@@ -385,3 +417,10 @@ class OpenDocument:
         for p in self.all_pages.values():
             p["src"] = order.get(p["id"])
         self._take_snapshot(saved_pages)
+        # The written file has the same page backgrounds as before (only the notes
+        # changed): remembered under the new revision, so reopening is immediate.
+        try:
+            self.backgrounds.record(self.doc_id, self.revision,
+                                    [self.all_pages.get(p["id"], p).get("bg") for p in saved_pages])
+        except OSError:
+            pass

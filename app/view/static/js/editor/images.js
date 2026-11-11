@@ -70,7 +70,9 @@ export class ImagesMethods {
       try { target.setPointerCapture(e.pointerId); } catch { /* ignored */ }
       const start = { cx: e.clientX, cy: e.clientY, x: img.x, y: img.y, w: img.w };
       const ratio = img.h / img.w;
+      let last = e;
       const move = (ev) => {
+        last = ev;
         const dx = (ev.clientX - start.cx) / this.scale, dy = (ev.clientY - start.cy) / this.scale;
         if (mode === 'move') { img.x = start.x + dx; img.y = start.y + dy; }
         else { img.w = Math.max(20, start.w + dx); img.h = img.w * ratio; }
@@ -80,7 +82,11 @@ export class ImagesMethods {
         target.removeEventListener('pointermove', move);
         target.removeEventListener('pointerup', up);
         target.removeEventListener('pointercancel', up);
-        if (img.x !== start.x || img.y !== start.y || img.w !== start.w) {
+        // Released on another page: the image moves to that page (see dropPage in texts.js).
+        const drop = mode === 'move' ? this.dropPage(page, el, last) : null;
+        if (drop) {
+          this.send({ type: 'changeImage', page: page.id, id: img.id, x: drop.x, y: drop.y, w: img.w, h: img.h, toPage: drop.page.id });
+        } else if (img.x !== start.x || img.y !== start.y || img.w !== start.w) {
           this.send({ type: 'changeImage', page: page.id, id: img.id, x: img.x, y: img.y, w: img.w, h: img.h });
         }
       };

@@ -112,4 +112,9 @@ def security_headers(resp):
     # logging out on a shared iPad); static files, previews and images do.
     if resp.mimetype in ("application/json", "text/html") and "Cache-Control" not in resp.headers:
         resp.headers["Cache-Control"] = "no-store"
+    # The app's own scripts and styles: kept, but checked with the server every time
+    # (an unchanged file costs a short "not modified" answer). Without this Safari
+    # may keep using an old version for a while after an update.
+    if request.path.startswith("/static/") and "Cache-Control" not in resp.headers:
+        resp.headers["Cache-Control"] = "no-cache"
     return resp

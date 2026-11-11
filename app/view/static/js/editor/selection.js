@@ -36,16 +36,22 @@ export class SelectionMethods {
     el.className = 'selection';
     const menu = document.createElement('div');
     menu.className = 'selection-menu';
-    const dup = document.createElement('button');
-    dup.textContent = 'Duplica';
-    dup.addEventListener('click', () => this.send({ type: 'duplicateSelection', ...this.selectionPayload() }));
-    const del = document.createElement('button');
-    del.textContent = 'Elimina';
-    del.className = 'danger';
-    del.addEventListener('click', () => this.removeSelection());
-    menu.append(dup, del);
+    const button = (label, title, onClick, cls = '') => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.title = title;
+      if (cls) b.className = cls;
+      b.addEventListener('click', onClick);
+      b.addEventListener('pointerdown', (e) => e.stopPropagation());
+      return b;
+    };
+    menu.append(
+      button('Copia', 'Copia (Ctrl+C): poi Incolla su un\'altra pagina o in un altro documento', () => this.copy()),
+      button('Taglia', 'Taglia (Ctrl+X)', () => this.cut()),
+      button('Duplica', 'Una copia accanto', () => this.send({ type: 'duplicateSelection', ...this.selectionPayload() })),
+      button('Elimina', 'Elimina (Canc)', () => this.removeSelection(), 'danger'),
+    );
     el.append(menu);
-    for (const b of [dup, del]) b.addEventListener('pointerdown', (e) => e.stopPropagation());
     el.addEventListener('pointerdown', (e) => this.dragSelection(e));
     return el;
   }
