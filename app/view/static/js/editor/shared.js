@@ -91,6 +91,9 @@ export const TEXT_SIZE_MIN = 6;
 export const TEXT_SIZE_MAX = 72;
 export const TEXT_SIZE_DEFAULT = 16;
 export const TEXT_SIZE_PREF = 'notes.textSize';
+// Text boxes are laid out at this many CSS pixels per PDF point whatever the zoom,
+// then scaled on screen (texts.js, placeTextbox): the text never moves when zooming.
+export const TEXT_LAYOUT_SCALE = 2;
 export const TEXT_W_MIN = 20;          // narrowest text box (same limit as the controller)
 // Keyboard shortcuts for the tools (outside text boxes).
 export const TOOL_KEYS = { p: 'pen', h: 'highlighter', e: 'eraser', l: 'lasso', f: 'shape', t: 'text' };

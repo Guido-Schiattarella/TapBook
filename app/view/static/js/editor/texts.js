@@ -5,7 +5,7 @@
 // with the handles to move, resize and delete it, and the toolbar shows its font
 // size. Esc (or a tap elsewhere on the page) leaves it: it is no longer
 // highlighted, and if it was left empty it disappears.
-import { TYPING_DELAY, TEXT_W_MIN } from './shared.js';
+import { TYPING_DELAY, TEXT_W_MIN, TEXT_LAYOUT_SCALE } from './shared.js';
 
 export class TextsMethods {
   // =====================================================================
@@ -37,19 +37,27 @@ export class TextsMethods {
     this.pagesEl.querySelector(`.textbox[data-id="${id}"] textarea`)?.focus();
   }
 
+  // The box (with its handles) follows the zoom; the text inside is laid out always
+  // at the same scale (TEXT_LAYOUT_SCALE pixels per PDF point) and only enlarged or
+  // reduced on screen. Laid out at the zoom's own size, the browser rounded lines
+  // and letters differently at every zoom (Safari rounds each line's height to
+  // whole pixels): the text moved up or down over the page, and a word could even
+  // wrap differently. Now lines and wrapping are the same at any zoom.
   placeTextbox(el, t) {
-    const k = this.scale;
+    const k = this.scale, b = TEXT_LAYOUT_SCALE;
     Object.assign(el.style, { left: t.x * k + 'px', top: t.y * k + 'px', width: t.w * k + 'px', height: t.h * k + 'px' });
     const ta = el.querySelector('textarea');
-    ta.style.fontSize = t.size * k + 'px';
-    ta.style.color = t.color;
+    Object.assign(ta.style, { width: t.w * b + 'px', height: t.h * b + 'px', fontSize: t.size * b + 'px',
+      transform: `scale(${k / b})`, color: t.color });
   }
 
-  // Height (in PDF points) needed to show all the text at the box's current width.
+  // Height (in PDF points) needed to show all the text at the box's current width
+  // (measured in the fixed layout, so the same at any zoom).
   measureText(t, ta) {
+    const height = ta.style.height;
     ta.style.height = 'auto';
-    const needed = ta.scrollHeight / this.scale;
-    ta.style.height = '';
+    const needed = ta.scrollHeight / TEXT_LAYOUT_SCALE;
+    ta.style.height = height;
     return Math.max(t.size * 1.6, needed + 4);
   }
 

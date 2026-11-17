@@ -35,6 +35,19 @@ export class TouchMethods {
     return !!p && performance.now() - p.t < PEN_MATCH_MS && Math.hypot(t.clientX - p.x, t.clientY - p.y) < PEN_MATCH_PX;
   }
 
+  // The Pencil's touch among these (the one known as the Pencil, or the only one).
+  pencilTouch(list) {
+    const all = [...list];
+    return all.find((t) => this.pencilIds.has(t.identifier)) || (all.length === 1 ? all[0] : null);
+  }
+
+  // A pointer event made from the Pencil's touch, for the stroke in progress.
+  penEventFrom(t, e) {
+    return { pointerId: this.gesture.pointerId, pointerType: 'pen', clientX: t.clientX, clientY: t.clientY,
+      pressure: t.force > 0 ? t.force : 0.5, button: 0, buttons: 1, timeStamp: e.timeStamp, target: e.target,
+      preventDefault() {} };
+  }
+
   // The Pencil touched the page (pointer event, before or after its touch event):
   // from now until it is lifted nothing scrolls or zooms. A finger being watched
   // that is actually the Pencil (its touch came first) is forgotten, and a pinch
@@ -42,6 +55,7 @@ export class TouchMethods {
   penTouched(e) {
     this.penLast = performance.now();
     this.penDown = true;
+    this.penHold = { top: this.pagesEl.scrollTop, left: this.pagesEl.scrollLeft };   // see holdSheet
     this.lockScroll();
     this.penPoint = { x: e.clientX, y: e.clientY, t: performance.now() };
     const f = this.finger;
@@ -64,7 +78,10 @@ export class TouchMethods {
     // The Pencil's lifting was lost (no Pencil touch left, nothing from it for a
     // while): the sheet must not stay locked.
     if (this.penDown && ![...e.touches].some((t) => this.isPencil(t)) && performance.now() - this.penLast > PEN_LOST_MS) {
+      const g = this.gesture;
+      if (g?.byTouch) this.pointerUp({ pointerId: g.pointerId, pointerType: 'pen' });   // its stroke ends here
       this.penDown = false;
+      this.penHold = null;
       this.unlockScroll();
     }
     // The Pencil never scrolls: its touch is prevented however many fingers are down.
@@ -93,6 +110,13 @@ export class TouchMethods {
   }
 
   touchMove(e) {
+    // A Pencil stroke whose pointer the browser cancelled goes on with its touch.
+    if (this.gesture?.byTouch) {
+      const t = this.pencilTouch(e.touches);
+      if (t) this.pointerMove(this.penEventFrom(t, e));
+      if (e.cancelable) e.preventDefault();
+      return;
+    }
     // While the Pencil is on the screen nothing scrolls, even if a touch slipped
     // through at its start (prevented as long as the browser allows it).
     if (this.penDown || [...e.touches].some((t) => this.pencilIds.has(t.identifier))) this.penTouch(e);
@@ -116,10 +140,16 @@ export class TouchMethods {
   }
 
   touchEnd(e, cancelled = false) {
+    // The Pencil lifted at the end of a stroke continued with its touch: the stroke ends.
+    const g = this.gesture;
+    if (g?.byTouch) {
+      const t = [...e.changedTouches].find((c) => this.pencilIds.has(c.identifier)) || (!e.touches.length ? e.changedTouches[0] : null);
+      if (t) this.pointerUp(this.penEventFrom(t, e));
+    }
     for (const t of e.changedTouches) this.pencilIds.delete(t.identifier);
     if (!e.touches.length) {                     // nothing left on the screen
       this.pencilIds.clear();
-      if (this.penDown) { this.penDown = false; this.unlockScroll(); }
+      if (this.penDown) { this.penDown = false; this.penHold = null; this.unlockScroll(); }
     }
     if (this.pinch && (cancelled || this.fingersOf(e).length < 2)) {
       this.endPinch();

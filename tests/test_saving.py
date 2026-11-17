@@ -131,7 +131,9 @@ def main():
     add(stroke(9201)); t0 = time.perf_counter(); ed.close("anna", sid); closing = time.perf_counter() - t0
     th.join(); OpenDocument.write_save = orig
     check(closing < 0.3, f"closing does not wait for the file ({closing:.2f}s)")
-    for _ in range(200):
+    # The room closes after the final (full) save: up to a minute on a slow machine
+    # (e.g. a laptop in power-saving mode); the check is about what is kept, not speed.
+    for _ in range(1200):
         if room.closed:
             break
         time.sleep(0.05)

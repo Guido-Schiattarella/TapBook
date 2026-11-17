@@ -77,6 +77,9 @@ export class ToolbarMethods {
     // text, the font size in place of the thickness.
     const eraser = this.tool === 'eraser', text = this.tool === 'text';
     this.colorsEl.hidden = eraser;
+    // Each tool shows its own colour: the highlighter its own, pen, shapes and text
+    // the one they share (before, the colour of the previous tool stayed highlighted).
+    if (!eraser) this.showColor();
     document.getElementById('width-control').hidden = eraser || text;
     document.getElementById('width-presets').hidden = eraser || text;
     if (!eraser && !text) this.showWidth();      // each tool has its own thickness

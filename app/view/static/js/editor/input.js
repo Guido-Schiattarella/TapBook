@@ -128,7 +128,7 @@ export class InputMethods {
     this.pagesEl.addEventListener('pointerdown', safe(this.pointerDown));
     this.pagesEl.addEventListener('pointermove', safe(this.pointerMove));
     this.pagesEl.addEventListener('pointerup', safe(this.pointerUp));
-    this.pagesEl.addEventListener('pointercancel', safe(this.pointerUp));
+    this.pagesEl.addEventListener('pointercancel', safe(this.pointerCancel));
     // Right click of the mouse: our menu (copy, cut, paste…). The pen side button
     // is a "right click" too for the browser, but it moves the sheet (see startPan).
     this.pagesEl.addEventListener('contextmenu', (e) => {
@@ -144,7 +144,7 @@ export class InputMethods {
     // Safari can lose the pointer capture without sending "pointerup": the stroke
     // ends there instead of staying open.
     this.pagesEl.addEventListener('lostpointercapture', safe((e) => {
-      if (this.gesture && e.pointerId === this.gesture.pointerId) this.pointerUp(e);
+      if (this.gesture && e.pointerId === this.gesture.pointerId && !this.gesture.byTouch) this.pointerUp(e);
     }));
     // A single tap (not a scroll) creates text boxes and images.
     this.pagesEl.addEventListener('click', (e) => this.pageClick(e));
@@ -153,6 +153,7 @@ export class InputMethods {
     // once per frame, remembering the direction (the piece reaches further that way).
     let regionFrame = null, scrollEnd = null, lastX = this.pagesEl.scrollLeft, lastY = this.pagesEl.scrollTop;
     this.pagesEl.addEventListener('scroll', () => {
+      if (this.holdSheet()) return;      // the Pencil is down: the sheet stays where it was
       if (!this.pinch) this.showNav();
       this.schedulePosition();
       const x = this.pagesEl.scrollLeft, y = this.pagesEl.scrollTop;
@@ -348,9 +349,35 @@ export class InputMethods {
     return [raw[0] + dx / this.scale, raw[1] + dy / this.scale, raw[2]];
   }
 
+  // The browser cancelled the Pencil's pointer while the Pencil is still on the
+  // screen: on the iPad this happens when its touch is taken into a scrolling that
+  // was already under way (the sheet stopped with a finger a moment before, or a
+  // finger still down), and the page cannot prevent it. The stroke does not end:
+  // it goes on with the Pencil's touch events (touch.js) until it is lifted, and
+  // the sheet is held still meanwhile (holdSheet).
+  pointerCancel(e) {
+    const g = this.gesture;
+    if (e.pointerType === 'pen' && this.penDown && g && e.pointerId === g.pointerId && g.type !== 'pan') {
+      g.byTouch = true;
+      return;
+    }
+    this.pointerUp(e);
+  }
+
+  // While the Pencil is down the sheet never moves: if the browser scrolls it anyway
+  // (see pointerCancel), it is put back at once where it was when the Pencil touched.
+  // Not while the Pencil's side button moves it on purpose.
+  holdSheet() {
+    const hold = this.penHold;
+    if (!hold || !this.penDown || this.gesture?.type === 'pan') return false;
+    if (this.pagesEl.scrollTop !== hold.top) this.pagesEl.scrollTop = hold.top;
+    if (this.pagesEl.scrollLeft !== hold.left) this.pagesEl.scrollLeft = hold.left;
+    return true;
+  }
+
   pointerUp(e) {
     const g = this.gesture;
-    if (e.pointerType === 'pen') { this.penLast = performance.now(); this.penDown = false; this.unlockScroll(); }
+    if (e.pointerType === 'pen') { this.penLast = performance.now(); this.penDown = false; this.penHold = null; this.unlockScroll(); }
     if (!g || e.pointerId !== g.pointerId) return;
     this.gesture = null;
     if (g.type === 'pan') {

@@ -103,6 +103,7 @@ export class EditorView {
     this.finger = null;         // finger scrolling the sheet (touch.js)
     this.pencilIds = new Set(); // touch identifiers that are the Pencil (touch.js)
     this.penDown = false;       // the Pencil is touching the screen (input.js, touch.js)
+    this.penHold = null;        // scroll position held while the Pencil is down (input.js, holdSheet)
     this.scrollDir = null;      // last direction of the scrolling (render.js draws further that way)
     this.deferredRenders = new Set();   // pages to draw once the sheet stops (render.js)
     this.cancelLongPress?.();

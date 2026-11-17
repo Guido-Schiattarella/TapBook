@@ -18,7 +18,7 @@ const classes = new Set();
 const page = { closest: (sel) => (sel.split(',').some((s) => ['.page', '.pages'].includes(s.trim())) ? page : null) };
 Object.assign(ed, {
   pencilIds: new Set(), penDown: false, penLast: -1e9, finger: null, pinch: null, gesture: null, fingerDraw: false, tool: 'pen',
-  pagesEl: { classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c) } },
+  pagesEl: { scrollTop: 0, scrollLeft: 0, classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c) } },
   hideMenu() {}, startLongPress() {}, cancelLongPress() {}, flushStatus() {}, showMenu() {},
   startPinch() { this.pinch = { started: true }; }, movePinch() {}, endPinch() { this.pinch = null; },
   cancelPinch() { this.pinch = null; }, nextPage() {}, toggleZoomAt() {},
@@ -115,4 +115,39 @@ const index = touch(42, 400, 700, 'direct', 10), thumbP = touch(43, 250, 800, 'd
 ed.touchStart(ev([index], [index])); e = ev([index, thumbP], [thumbP]); ed.touchStart(e);
 ok(!!ed.pinch, 'pinch with a wide thumb (radius 80): still a pinch');
 ed.endPinch(); ed.touchEnd(ev([], [index, thumbP]));
+
+// 10) sheet stopped with a finger, then the Pencil: the browser takes the Pencil's
+// touch into its scrolling and cancels the stroke's pointer. The sheet is put back
+// at once and the stroke goes on with the Pencil's touch until it is lifted.
+{
+  const moved = [], ended = [];
+  const realMove = ed.pointerMove, realUp = ed.pointerUp;
+  ed.pointerMove = (ev) => moved.push([ev.clientX, ev.clientY, ev.pointerType, ev.pointerId]);
+  ed.pointerUp = function (ev) { ended.push(ev.pointerId); return realUp.call(this, ev); };
+  ed.pagesEl.scrollTop = 500; ed.pagesEl.scrollLeft = 20;
+  pen(200, 300);
+  ed.gesture = { type: 'draw', pointerId: 77, pointerType: 'pen', page: { id: 'p' } };
+  const pt = touch(50, 200, 300, 'stylus');
+  ed.touchStart(ev([pt], [pt]));
+  ed.pointerCancel({ pointerType: 'pen', pointerId: 77 });
+  ok(ed.gesture?.byTouch && ed.penDown, 'pointer cancelled with the Pencil still down: the stroke goes on');
+  ed.pagesEl.scrollTop = 640; ed.pagesEl.scrollLeft = 35;       // the browser scrolls the sheet
+  ok(ed.holdSheet() && ed.pagesEl.scrollTop === 500 && ed.pagesEl.scrollLeft === 20, 'the sheet is put back where it was');
+  e = ev([touch(50, 230, 310, 'stylus')], [touch(50, 230, 310, 'stylus')]); ed.touchMove(e);
+  ok(moved.length === 1 && moved[0][0] === 230 && moved[0][2] === 'pen' && moved[0][3] === 77, 'the Pencil\'s touch continues the stroke');
+  ok(e.prevented, 'and is prevented');
+  // (the stroke's own ending is not under test here: only that it ends, and the sheet is freed)
+  ed.pointerUp = function (ev) { ended.push(ev.pointerId); this.gesture = null; this.penDown = false; this.penHold = null; this.unlockScroll(); };
+  ed.touchEnd(ev([], [touch(50, 240, 312, 'stylus')]));
+  ok(ended.length === 1 && ended[0] === 77 && !ed.gesture, 'Pencil lifted: the stroke ends');
+  ok(!ed.penDown && !ed.holdSheet() && !classes.has('pen-down'), 'and the sheet is free again');
+  ed.pagesEl.scrollTop = 900;
+  ok(!ed.holdSheet() && ed.pagesEl.scrollTop === 900, 'the finger scrolls normally afterwards');
+  // the Pencil's side button moves the sheet on purpose: not held
+  pen(200, 300); ed.gesture = { type: 'pan', pointerId: 78, pointerType: 'pen' };
+  ed.pagesEl.scrollTop = 1000;
+  ok(!ed.holdSheet() && ed.pagesEl.scrollTop === 1000, 'side button (hand): the sheet moves');
+  ed.gesture = null; penUp();
+  ed.pointerMove = realMove; ed.pointerUp = realUp;
+}
 console.log(`${passed} controlli superati (Pencil e dita)`);
